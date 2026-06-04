@@ -4,6 +4,7 @@ C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\engine\SimulationE
 C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\model\map\CityMap.java
 C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\model\map\IntersectionNode.java
 C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\model\map\RoadEdge.java
+C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\model\Pedestrian.java
 C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\model\strategy\AggressiveDriver.java
 C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\model\strategy\DrivingStrategy.java
 C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\model\strategy\EmergencyDriver.java

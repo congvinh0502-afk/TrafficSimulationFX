@@ -5,10 +5,9 @@ import javafx.animation.AnimationTimer;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
-import javafx.scene.shape.StrokeLineCap;
+import model.Pedestrian;
 import model.map.CityMap;
 import model.map.IntersectionNode;
-import model.map.RoadEdge;
 import java.util.ArrayList;
 import java.util.List;
 import model.traffic.TrafficLight;
@@ -17,6 +16,7 @@ import system.MovementSystem;
 import system.SpawnSystem;
 import system.CollisionSystem;
 import system.TrafficRuleSystem;
+import view.MapRenderer;
 import view.VehicleRenderer;
 
 public class SimulationEngine extends AnimationTimer {
@@ -41,9 +41,14 @@ public class SimulationEngine extends AnimationTimer {
     // --- ENVIRONMENT ---
     private boolean isPaused = false;
     private boolean isDebugMode = false;
-    private double timeOfDay = 12.0; 
+    private double timeOfDay = 12.0;
     private double[] rainX = new double[300];
     private double[] rainY = new double[300];
+
+    // --- GRAPHIC ASSETS (generated once per map load) ---
+    private List<MapRenderer.Decoration>  decorations  = new ArrayList<>();
+    private List<MapRenderer.StreetLight> streetLights = new ArrayList<>();
+    private List<Pedestrian>              pedestrians  = new ArrayList<>();
    
 
     public SimulationEngine(Canvas canvas) {
@@ -98,9 +103,13 @@ public class SimulationEngine extends AnimationTimer {
         spawnSystem.resetTimer();
         cityMap.loadMap(mapType);
         zoomScale = 1.0;
-        unlockCamera();           
-        
-        // Thuật toán: Tìm Ngã tư đầu tiên (Ngã tư trung tâm) để chĩa Camera vào
+        unlockCamera();
+
+        // Sinh tài nguyên đồ họa một lần sau khi load map
+        decorations  = MapRenderer.generateDecorations(cityMap);
+        streetLights = MapRenderer.generateStreetLights(cityMap);
+        pedestrians  = MapRenderer.generatePedestrians(cityMap);
+
         if (!cityMap.getNodes().isEmpty()) {
             IntersectionNode centerNode = cityMap.getNodes().get(0);
             cameraX = centerNode.getX() - (canvas.getWidth() / 2);
@@ -183,9 +192,10 @@ public class SimulationEngine extends AnimationTimer {
         movementSystem.updatePositions(vehicles, cityMap); // Gắn cờ bẻ lái Bezier
         
         // 5. CHO TỪNG CHIẾC XE TỰ CHẠY BẰNG BỘ NÃO MỚI CỦA CHÚNG NÓ
-        for (Vehicle v : vehicles) {
-            v.update(vehicles); 
-        }
+        for (Vehicle v : vehicles) v.update(vehicles);
+
+        // 5b. Cập nhật người đi bộ
+        for (Pedestrian p : pedestrians) p.update();
 
         // 6. Dọn dẹp xe ra khỏi vùng bản đồ + dừng âm thanh ngay khi xe cuối cùng biến mất
         boolean hadAmbulance = vehicles.stream().anyMatch(v -> v instanceof model.vehicle.EmergencyVehicle);
@@ -212,265 +222,162 @@ public class SimulationEngine extends AnimationTimer {
         return Color.LIMEGREEN;
     }
 
-    /** Vẽ trụ đèn giao thông tại (x, y) gồm hộp đen + 1 đèn màu */
+    // ---- 3D traffic light (basic: 1 dot; graphic: 3-bulb pole) ----
     private void drawTrafficLight(GraphicsContext gc, TrafficLight light, double x, double y) {
-        // Hộp đèn màu đen
-        gc.setFill(Color.web("#2c3e50"));
-        gc.fillRoundRect(x, y, 16, 22, 4, 4);
-        // Đèn màu bên trong
-        gc.setFill(getColorForPhase(light.getPhase()));
-        gc.fillOval(x + 3, y + 3, 10, 10);
-        // Halo nhỏ khi xanh
-        if (light.getPhase() == TrafficLight.Phase.GREEN) {
-            gc.setFill(Color.LIMEGREEN.deriveColor(0, 1, 1, 0.25));
-            gc.fillOval(x - 2, y - 2, 20, 20);
+        if (VehicleRenderer.BASIC_MODE) {
+            gc.setFill(Color.web("#2c3e50")); gc.fillRoundRect(x, y, 16, 22, 4, 4);
+            gc.setFill(getColorForPhase(light.getPhase())); gc.fillOval(x+3, y+3, 10, 10);
+            return;
+        }
+        // Shadow + pole
+        gc.setFill(Color.rgb(0,0,0,0.18)); gc.fillOval(x-1, y+43, 18, 6);
+        gc.setStroke(Color.web("#4a5568")); gc.setLineWidth(2.5);
+        gc.strokeLine(x+8, y+48, x+8, y+18);
+        // Housing
+        gc.setFill(Color.web("#111820")); gc.fillRoundRect(x+1, y+1, 16, 40, 4, 4);
+        gc.setFill(Color.web("#1a252f")); gc.fillRoundRect(x, y, 16, 40, 4, 4);
+        gc.setFill(Color.rgb(80,100,120,0.3)); gc.fillRoundRect(x, y, 3, 40, 4, 4);
+        // 3 bulbs
+        TrafficLight.Phase ph = light.getPhase();
+        drawBulb(gc, x+3, y+3,  10, Color.RED,      ph == TrafficLight.Phase.RED);
+        drawBulb(gc, x+3, y+15, 10, Color.YELLOW,   ph == TrafficLight.Phase.YELLOW);
+        drawBulb(gc, x+3, y+27, 10, Color.LIMEGREEN, ph == TrafficLight.Phase.GREEN);
+    }
+
+    private void drawBulb(GraphicsContext gc, double x, double y, double sz, Color c, boolean lit) {
+        if (lit) {
+            gc.setFill(c.deriveColor(0,1,1,0.3)); gc.fillOval(x-3, y-3, sz+6, sz+6);
+            gc.setFill(c); gc.fillOval(x, y, sz, sz);
+            gc.setFill(Color.rgb(255,255,255,0.5)); gc.fillOval(x+2, y+1, sz*0.35, sz*0.35);
+        } else {
+            gc.setFill(c.deriveColor(0, 0.3, 0.25, 1)); gc.fillOval(x, y, sz, sz);
         }
     }
 
     private void render() {
-        // TẦNG 1: VẼ ĐỊA HÌNH
-        gc.setFill(Color.web("#27ae60")); 
-        gc.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
-        
+        double cW = canvas.getWidth(), cH = canvas.getHeight();
+
+        // Tính độ tối
+        double darkness = 0;
+        if (config.Constants.TIME_MODE == 2) {
+            darkness = 0.75;
+        } else if (config.Constants.TIME_MODE == 0) {
+            if      (timeOfDay >= 18 || timeOfDay <= 6)  darkness = 0.75;
+            else if (timeOfDay > 16)  darkness = 0.75 * ((timeOfDay - 16) / 2.0);
+            else if (timeOfDay < 8)   darkness = 0.75 * (1 - ((timeOfDay - 6) / 2.0));
+        }
+
+        // NỀN
+        if (VehicleRenderer.BASIC_MODE) {
+            gc.setFill(Color.web("#27ae60")); gc.fillRect(0, 0, cW, cH);
+        } else {
+            MapRenderer.drawBackground(gc, cameraX, cameraY);
+        }
+
         gc.save();
-        // Phóng to / Thu nhỏ xoay quanh tâm màn hình
-        gc.translate(canvas.getWidth()/2, canvas.getHeight()/2);
+        gc.translate(cW/2, cH/2);
         gc.scale(zoomScale, zoomScale);
-        gc.translate(-canvas.getWidth()/2, -canvas.getHeight()/2);
+        gc.translate(-cW/2, -cH/2);
         gc.translate(-cameraX, -cameraY);
 
-        // 1.1 VẼ ĐƯỜNG NHỰA VÀ VẠCH KẺ LÀN (Đã hỗ trợ phân cấp Đại lộ, Phố, Ngõ)
-        for (RoadEdge road : cityMap.getRoads()) {
-            double sx = road.getStartNode().getX(); double sy = road.getStartNode().getY();
-            double ex = road.getEndNode().getX(); double ey = road.getEndNode().getY();
-            
-            double roadW = road.getWidth(); // Lấy độ rộng linh hoạt từ class RoadEdge
-            
-            // Vẽ nền đường nhựa màu xám
-            gc.setStroke(Color.web("#34495e")); 
-            gc.setLineWidth(roadW); 
-            gc.setLineCap(StrokeLineCap.BUTT); 
-            gc.strokeLine(sx, sy, ex, ey);
-            
-            // Vẽ vạch kẻ đường (Sẽ không vẽ vạch nếu đó là ALLEY - Ngõ hẻm)
-            if (road.getType() != RoadEdge.RoadType.ALLEY) {
-                gc.setStroke(Color.web("#f1c40f")); // Màu vàng
-                gc.setLineWidth(2);
-                
-                if (road.getType() == RoadEdge.RoadType.AVENUE) {
-                    // Cấp Đại lộ (AVENUE): Vẽ vạch đôi liền màu vàng (Tim đường)
-                    gc.setLineDashes(null);
-                    gc.strokeLine(sx + 2, sy + 2, ex + 2, ey + 2);
-                    gc.strokeLine(sx - 2, sy - 2, ex - 2, ey - 2);
-                    
-                    // Vẽ vạch đứt phân làn 4 xe
-                    drawDashedLine(sx, sy, ex, ey, roadW / 4);  
-                    drawDashedLine(sx, sy, ex, ey, -roadW / 4); 
-                } else {
-                    // Cấp Đường phố (STREET): Vẽ 1 vạch đứt màu vàng ở giữa
-                    gc.setLineDashes(15, 15);
-                    gc.strokeLine(sx, sy, ex, ey);
-                    gc.setLineDashes(null);
-                }
-            }
-        
-        }
+        // === TẦNG 1a: Vỉa hè ===
+        if (!VehicleRenderer.BASIC_MODE) MapRenderer.drawSidewalks(gc, cityMap);
 
-        // 1.2 VẼ CHI TIẾT NGÃ TƯ (Vạch đi bộ, Vạch dừng, Vạch dẫn hướng)
-        for (IntersectionNode node : cityMap.getNodes()) {
-            double nX = node.getX(); double nY = node.getY();
-            double halfW = Constants.ROAD_WIDTH / 2;
+        // === TẦNG 1b: Đường + vạch kẻ ===
+        MapRenderer.drawRoads(gc, cityMap);
 
-            // Xóa vạch kẻ đường đâm xuyên vào giữa ngã tư (chỉ cho NGÃ 3/4)
-            if (node.getType() != IntersectionNode.NodeType.FIVE_WAY) {
-                gc.setFill(Color.web("#34495e"));
-                gc.fillRect(nX - halfW, nY - halfW, Constants.ROAD_WIDTH, Constants.ROAD_WIDTH);
-            }
+        // === TẦNG 1c: Chi tiết ngã tư / bùng binh ===
+        MapRenderer.drawIntersectionDetails(gc, cityMap);
 
-            if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
-                // --- ĐỒ HỌA BÙNG BINH (NGÃ 5) – KHỐI DUY NHẤT ---
-                double islandR  = 40;
-                double junctionR = config.Constants.ROUNDABOUT_RADIUS; // 100
-                double ringR     = (islandR + junctionR) / 2.0;        // 70
+        // === TẦNG 1d: Trang trí mặt đất (công viên, bãi đỗ) ===
+        if (!VehicleRenderer.BASIC_MODE) MapRenderer.drawDecorationsGround(gc, decorations);
 
-                // a) Nền nhựa tròn che mọi vạch đường đâm vào tâm
-                gc.setFill(Color.web("#34495e"));
-                gc.fillOval(nX - junctionR, nY - junctionR, junctionR * 2, junctionR * 2);
+        // === TẦNG 1e: Trang trí cao (nhà, cây, cửa hàng) ===
+        if (!VehicleRenderer.BASIC_MODE) MapRenderer.drawDecorationsAbove(gc, decorations, darkness);
 
-                // b) Vòng phân làn (dashed ring)
-                gc.setStroke(Color.WHITE); gc.setLineWidth(2); gc.setLineDashes(12, 10);
-                gc.strokeOval(nX - ringR, nY - ringR, ringR * 2, ringR * 2);
-                gc.setLineDashes(null);
+        // === TẦNG 2: Thân xe ===
+        for (Vehicle v : vehicles) VehicleRenderer.drawCarBody(gc, v);
 
-                // c) Đảo cỏ xanh
-                gc.setFill(Color.web("#2ecc71"));
-                gc.fillOval(nX - islandR, nY - islandR, islandR * 2, islandR * 2);
-                gc.setStroke(Color.WHITE); gc.setLineWidth(2);
-                gc.strokeOval(nX - islandR, nY - islandR, islandR * 2, islandR * 2);
-
-                // d) Vạch đi bộ + vạch dừng cho từng cánh
-                drawArmMarkings(nX, nY,   0, junctionR, halfW); // Đông
-                drawArmMarkings(nX, nY,  90, junctionR, halfW); // Nam
-                drawArmMarkings(nX, nY, 180, junctionR, halfW); // Tây
-                drawArmMarkings(nX, nY, 270, junctionR, halfW); // Bắc
-                if (node.isHasNW()) drawArmMarkings(nX, nY, 225, junctionR, halfW); // TâyBắc
-            } else {
-                // --- ĐỒ HỌA NGÃ 3, NGÃ 4 (THÔNG MINH theo hướng đường) ---
-                boolean hasNorth = false, hasSouth = false, hasWest = false, hasEast = false;
-                for (RoadEdge r : cityMap.getRoads()) {
-                    if (r.getStartNode() == node || r.getEndNode() == node) {
-                        IntersectionNode neighbor = (r.getStartNode() == node) ? r.getEndNode() : r.getStartNode();
-                        if (neighbor.getY() < node.getY() - 10) hasNorth = true;
-                        if (neighbor.getY() > node.getY() + 10) hasSouth = true;
-                        if (neighbor.getX() < node.getX() - 10) hasWest = true;
-                        if (neighbor.getX() > node.getX() + 10) hasEast = true;
-                    }
-                }
-
-                // a. Vạch đi bộ (Zebra Crossing) – mỗi hướng độc lập, offset +5 (gần ngã tư)
-                gc.setStroke(Color.WHITE); gc.setLineWidth(6); gc.setLineDashes(4, 6);
-                if (hasNorth) gc.strokeLine(nX - halfW + 5, nY - halfW - 5, nX + halfW - 5, nY - halfW - 5);
-                if (hasSouth) gc.strokeLine(nX - halfW + 5, nY + halfW + 5, nX + halfW - 5, nY + halfW + 5);
-                if (hasWest)  gc.strokeLine(nX - halfW - 5, nY - halfW + 5, nX - halfW - 5, nY + halfW - 5);
-                if (hasEast)  gc.strokeLine(nX + halfW + 5, nY - halfW + 5, nX + halfW + 5, nY + halfW - 5);
-                gc.setLineDashes(null);
-
-                // b. Vạch dừng – offset +15 (xa ngã tư hơn, xe dừng trước rồi mới đến vạch đi bộ)
-                gc.setStroke(Color.WHITE); gc.setLineWidth(3);
-                if (hasNorth) gc.strokeLine(nX - halfW, nY - halfW - 15, nX,        nY - halfW - 15);
-                if (hasSouth) gc.strokeLine(nX,        nY + halfW + 15, nX + halfW, nY + halfW + 15);
-                if (hasWest)  gc.strokeLine(nX - halfW - 15, nY,        nX - halfW - 15, nY + halfW);
-                if (hasEast)  gc.strokeLine(nX + halfW + 15, nY - halfW, nX + halfW + 15, nY);
-
-                // c. Vạch dẫn hướng ôm cua (Guide Arcs) - vàng mờ
-                gc.setStroke(Color.rgb(241, 196, 15, 0.4));
-                gc.setLineWidth(1.5);
-                gc.setLineDashes(5, 10);
-                gc.strokeArc(nX - halfW, nY - halfW, halfW, halfW, 270, 90, javafx.scene.shape.ArcType.OPEN);
-                gc.strokeArc(nX, nY - halfW, halfW, halfW, 180, 90, javafx.scene.shape.ArcType.OPEN);
-                gc.strokeArc(nX - halfW, nY, halfW, halfW, 0, 90, javafx.scene.shape.ArcType.OPEN);
-                gc.strokeArc(nX, nY, halfW, halfW, 90, 90, javafx.scene.shape.ArcType.OPEN);
-                gc.setLineDashes(null);
-            }
-        }
-
-        // TẦNG 2: VẼ THÂN XE 
-        for (Vehicle v : vehicles) {
-            VehicleRenderer.drawCarBody(gc, v);
-        }
-
-        // TẦNG 3: TÍNH TOÁN VÀ PHỦ MÀN ĐÊM (Shading Pass)
-        double darkness = 0;
-        if (timeOfDay >= 18 || timeOfDay <= 6) darkness = 0.75; 
-        else if (timeOfDay > 16 && timeOfDay < 18) darkness = 0.75 * ((timeOfDay - 16) / 2.0); 
-        else if (timeOfDay > 6 && timeOfDay < 8) darkness = 0.75 * (1 - ((timeOfDay - 6) / 2.0)); 
-
+        // === TẦNG 3: Phủ màn đêm ===
         if (darkness > 0) {
-            gc.setFill(Color.rgb(10, 15, 30, darkness)); 
-            // Tính toán vùng che phủ rộng hơn để không bị lỗi màn đêm khi zoom out
+            gc.setFill(Color.rgb(10, 15, 30, darkness));
             gc.fillRect(cameraX - 5000, cameraY - 5000, 15000, 15000);
         }
 
-        // TẦNG 4: VẼ ĐÈN PHA & ĐÈN HẬU 
-        for (Vehicle v : vehicles) {
-            VehicleRenderer.drawLights(gc, v, darkness);
-        }
+        // === TẦNG 4: Đèn pha xe + quầng đèn đường (ADD blend) ===
+        for (Vehicle v : vehicles) VehicleRenderer.drawLights(gc, v, darkness);
+        if (!VehicleRenderer.BASIC_MODE) MapRenderer.drawStreetLightGlow(gc, streetLights, darkness);
 
-        // TẦNG 5: VẼ ĐÈN GIAO THÔNG (chỉ vẽ ở hướng có đường)
+        // === TẦNG 5: Cột đèn đường + Đèn giao thông ===
+        if (!VehicleRenderer.BASIC_MODE) MapRenderer.drawStreetLightPoles(gc, streetLights);
+
         for (IntersectionNode node : cityMap.getNodes()) {
             if (node.isSpawnNode()) continue;
             double nX = node.getX(), nY = node.getY();
-            double off = Constants.ROAD_WIDTH / 2 + 8; // khoảng cách từ tâm đến trụ đèn
+            double off = Constants.ROAD_WIDTH / 2 + 8;
 
             if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
-                double off5 = config.Constants.ROUNDABOUT_RADIUS + 83; // 183 – ngoài mép bùng binh
+                double off5 = config.Constants.ROUNDABOUT_RADIUS + 83;
                 double d45  = Math.cos(Math.toRadians(45)) * off5;
-                drawTrafficLight(gc, node.getLightNorth(), nX - 8,        nY - off5 - 22);
-                drawTrafficLight(gc, node.getLightSouth(), nX - 8,        nY + off5);
-                drawTrafficLight(gc, node.getLightEast(),  nX + off5,     nY - 11);
-                drawTrafficLight(gc, node.getLightWest(),  nX - off5 - 16, nY - 11);
-                if (node.isHasNW()) drawTrafficLight(gc, node.getLightNW(), nX - d45 - 16, nY - d45 - 22);
+                drawTrafficLight(gc, node.getLightNorth(), nX - 8,          nY - off5 - 22);
+                drawTrafficLight(gc, node.getLightSouth(), nX - 8,          nY + off5);
+                drawTrafficLight(gc, node.getLightEast(),  nX + off5,       nY - 11);
+                drawTrafficLight(gc, node.getLightWest(),  nX - off5 - 16,  nY - 11);
+                if (node.isHasNW()) drawTrafficLight(gc, node.getLightNW(), nX-d45-16, nY-d45-22);
             } else {
-                // Chỉ vẽ đèn ở hướng có đường thực sự
-                if (node.isHasNorth()) drawTrafficLight(gc, node.getLightNorth(), nX - 12, nY - off - 10);
-                if (node.isHasSouth()) drawTrafficLight(gc, node.getLightSouth(), nX + 12, nY + off);
-                if (node.isHasEast())  drawTrafficLight(gc, node.getLightEast(),  nX + off, nY - 12);
-                if (node.isHasWest())  drawTrafficLight(gc, node.getLightWest(),  nX - off - 20, nY + 12);
+                if (node.isHasNorth()) drawTrafficLight(gc, node.getLightNorth(), nX - 12,     nY - off - 10);
+                if (node.isHasSouth()) drawTrafficLight(gc, node.getLightSouth(), nX + 12,     nY + off);
+                if (node.isHasEast())  drawTrafficLight(gc, node.getLightEast(),  nX + off,    nY - 12);
+                if (node.isHasWest())  drawTrafficLight(gc, node.getLightWest(),  nX - off-20, nY + 12);
             }
 
-            // Đồng hồ đếm ngược (hiển thị ở tâm ngã tư)
+            // Đồng hồ đếm ngược
             int remain = (int) Math.ceil(node.getRemainingTime());
-            boolean showText = node.getLightMode() == IntersectionNode.LightMode.COUNTDOWN
+            boolean showTimer = node.getLightMode() == IntersectionNode.LightMode.COUNTDOWN
                     || (node.getLightMode() == IntersectionNode.LightMode.SMART_COUNTDOWN && remain <= 10);
-            if (showText) {
-                gc.setFill(Color.WHITE);
-                gc.setFont(javafx.scene.text.Font.font("Arial", javafx.scene.text.FontWeight.BOLD, 16));
-                gc.fillText(String.valueOf(remain), nX - 8, nY + 6);
+            if (showTimer) {
+                if (VehicleRenderer.BASIC_MODE) {
+                    gc.setFill(Color.WHITE);
+                    gc.setFont(javafx.scene.text.Font.font("Arial", javafx.scene.text.FontWeight.BOLD, 16));
+                    gc.fillText(String.valueOf(remain), nX - 8, nY + 6);
+                } else {
+                    gc.setFill(Color.web("#1a252f")); gc.fillRoundRect(nX-12, nY-12, 24, 18, 4, 4);
+                    gc.setFill(Color.WHITE);
+                    gc.setFont(javafx.scene.text.Font.font("Arial", javafx.scene.text.FontWeight.BOLD, 12));
+                    gc.fillText(String.valueOf(remain), nX - 8, nY + 3);
+                }
             }
         }
 
-        // TẦNG 6: GIAO DIỆN GỠ LỖI (Tia Bezier)
+        // === TẦNG 6: Debug Bezier ===
         if (isDebugMode) {
             for (Vehicle v : vehicles) {
-                gc.setStroke(Color.CYAN); gc.setLineWidth(1); gc.strokeRect(v.getX() - v.getWidth()/2, v.getY() - v.getHeight()/2, v.getWidth(), v.getHeight());
+                gc.setStroke(Color.CYAN); gc.setLineWidth(1);
+                gc.strokeRect(v.getX()-v.getWidth()/2, v.getY()-v.getHeight()/2, v.getWidth(), v.getHeight());
                 if (v.isTurning()) {
                     gc.setStroke(Color.MAGENTA);
-                    gc.strokeLine(v.getP0x(), v.getP0y(), v.getP1x(), v.getP1y()); gc.strokeLine(v.getP1x(), v.getP1y(), v.getP2x(), v.getP2y());
+                    gc.strokeLine(v.getP0x(),v.getP0y(),v.getP1x(),v.getP1y());
+                    gc.strokeLine(v.getP1x(),v.getP1y(),v.getP2x(),v.getP2y());
                 }
             }
         }
-        
-        gc.restore(); 
 
-        // TẦNG 7: VẼ MƯA RƠI (Bám theo màn hình kính lái)
+        // === TẦNG 7: Người đi bộ ===
+        MapRenderer.drawPedestrians(gc, pedestrians);
+
+        gc.restore();
+
+        // === TẦNG 8: Mưa (bám màn hình) ===
         if (config.Constants.IS_RAINING) {
-            gc.setStroke(Color.rgb(200, 220, 255, 0.6)); 
-            gc.setLineWidth(1.5);
+            gc.setStroke(Color.rgb(200, 220, 255, 0.6)); gc.setLineWidth(1.5);
             for (int i = 0; i < 300; i++) {
-                gc.strokeLine(rainX[i], rainY[i], rainX[i] - 3, rainY[i] + 15);
-                rainY[i] += 25; 
-                rainX[i] -= 5;
-                if (rainY[i] > canvas.getHeight()) {
-                    rainY[i] = -20;
-                    rainX[i] = Math.random() * canvas.getWidth() + 100;
-                }
+                gc.strokeLine(rainX[i], rainY[i], rainX[i]-3, rainY[i]+15);
+                rainY[i] += 25; rainX[i] -= 5;
+                if (rainY[i] > cH) { rainY[i] = -20; rainX[i] = Math.random()*cW+100; }
             }
         }
     }
 
-    /** Vẽ vạch đi bộ + vạch dừng cho một cánh bùng binh theo góc angDeg (độ) */
-    private void drawArmMarkings(double cx, double cy, double angDeg, double junctionR, double halfW) {
-        double a  = Math.toRadians(angDeg);
-        double ux = Math.cos(a), uy = Math.sin(a);
-        double px = uy, py = -ux; // perpendicular
-
-        // Vạch đi bộ: junctionR + 55, trải hết bề ngang đường
-        double zd = junctionR + 55;
-        double zx = cx + ux * zd, zy = cy + uy * zd;
-        gc.setStroke(Color.WHITE); gc.setLineWidth(6); gc.setLineDashes(4, 6);
-        gc.strokeLine(zx - px * halfW, zy - py * halfW, zx + px * halfW, zy + py * halfW);
-        gc.setLineDashes(null);
-
-        // Vạch dừng: junctionR + 69 (ngoài vạch đi bộ), nửa đường phía làn xe vào
-        double sd = junctionR + 69;
-        double sx = cx + ux * sd, sy = cy + uy * sd;
-        gc.setLineWidth(3);
-        gc.strokeLine(sx, sy, sx + px * halfW, sy + py * halfW);
-    }
-
-    private void drawDashedLine(double sx, double sy, double ex, double ey, double offset) {
-        double angle = Math.atan2(ey - sy, ex - sx);
-        double p1x = sx + Math.cos(angle + Math.PI / 2) * offset;
-        double p1y = sy + Math.sin(angle + Math.PI / 2) * offset;
-        double p2x = ex + Math.cos(angle + Math.PI / 2) * offset;
-        double p2y = ey + Math.sin(angle + Math.PI / 2) * offset;
-
-        gc.setStroke(Color.WHITE);
-        gc.setLineWidth(2);
-        gc.setLineDashes(15, 15); 
-        gc.strokeLine(p1x, p1y, p2x, p2y);
-        gc.setLineDashes(null); 
-    }
     public javafx.scene.canvas.Canvas getCanvas() { return canvas; }
     public void clearAllVehicles() {
         vehicles.clear();
