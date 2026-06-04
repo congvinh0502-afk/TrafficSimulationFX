@@ -37,4 +37,22 @@ public class SoundManager {
         if (isMuted || horn == null) return;
         if (!horn.isPlaying()) horn.play(0.4);
     }
+
+    /** Dừng tất cả âm thanh (khi pause simulation) */
+    public static void pauseAll() {
+        if (ambulance != null && ambulance.isPlaying()) ambulance.stop();
+        if (firetruck != null && firetruck.isPlaying()) firetruck.stop();
+    }
+
+    /** Cho phép âm thanh tự restart khi simulation tiếp tục */
+    public static void resumeAll() {
+        // Sounds will restart automatically on next update() call
+    }
+
+    /** Dừng tất cả âm thanh khi chuyển map */
+    public static void stopAll() {
+        if (ambulance != null) ambulance.stop();
+        if (firetruck != null) firetruck.stop();
+        if (signal  != null)  signal.stop();
+    }
 }

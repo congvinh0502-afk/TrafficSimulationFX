@@ -12,12 +12,16 @@ public class SpawnSystem {
     private Random random = new Random();
     private int spawnDelay = 20;
     private boolean spawnEnabled = true;
+    private int totalFrames = 0;
+    private static final int EMERGENCY_UNLOCK_FRAMES = 480; // ~8 giây ở 60fps
 
     public void setSpawnDelay(int delay) { this.spawnDelay = delay; }
     public void setSpawnEnabled(boolean enabled) { this.spawnEnabled = enabled; }
+    public void resetTimer() { totalFrames = 0; } // Gọi khi đổi map
 
     public void spawnRandom(List<Vehicle> vehicles, CityMap cityMap) {
         if (!spawnEnabled) return;
+        totalFrames++;
         int currentDelay = Math.max(1, spawnDelay);
         if (random.nextInt(currentDelay) != 0) return;
 
@@ -53,6 +57,10 @@ public class SpawnSystem {
         double spawnX = sx + Math.cos(angleRad + Math.PI / 2) * offset;
         double spawnY = sy + Math.sin(angleRad + Math.PI / 2) * offset;
         double angle  = Math.toDegrees(angleRad);
+
+        // Xe ưu tiên chỉ xuất hiện sau EMERGENCY_UNLOCK_FRAMES frames (~8 giây)
+        boolean emergencyAllowed = totalFrames >= EMERGENCY_UNLOCK_FRAMES;
+        if (randType < 5 && !emergencyAllowed) randType = 50; // downgrade thành xe thường
 
         Vehicle newVehicle;
         if (randType < 3) {

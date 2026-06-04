@@ -57,13 +57,16 @@ public class TrafficRuleSystem {
             if (lightToObey == null) continue;
 
             // 3. Phanh khi gặp đèn Đỏ hoặc Vàng
-            if (lightToObey.getPhase() == TrafficLight.Phase.RED || lightToObey.getPhase() == TrafficLight.Phase.YELLOW) {
-                if (minDist > 70 && minDist < 150) {
-                    double safeSpeed = Math.sqrt(2 * 0.05 * (minDist - 70));
-                    v.setSpeed(Math.min(v.getSpeed(), safeSpeed));
-                } 
-                else if (minDist <= 70) {
+            // stopDist: xe dừng sao cho đầu xe nằm TRƯỚC vạch dừng (halfW + 15px)
+            // halfW = ROAD_WIDTH/2 = 60. Tâm xe dừng ở 60+15+halfLength ≈ 60+15+20 = 95px từ tâm ngã tư
+            double stopDist = config.Constants.ROAD_WIDTH / 2 + 15 + v.getWidth() / 2;
+            if (lightToObey.getPhase() == TrafficLight.Phase.RED
+                    || lightToObey.getPhase() == TrafficLight.Phase.YELLOW) {
+                if (minDist <= stopDist + 5) {
                     v.setSpeed(0);
+                } else if (minDist < 160) {
+                    double brakeStrength = Math.sqrt(Math.max(0, 2 * 0.08 * (minDist - stopDist)));
+                    v.setSpeed(Math.min(v.getSpeed(), brakeStrength));
                 }
             }
         }

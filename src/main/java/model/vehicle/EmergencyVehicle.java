@@ -8,7 +8,7 @@ public class EmergencyVehicle extends Vehicle {
         this.width = 45;
         this.height = 22;
         this.color = Color.web("#ecf0f1");
-        this.speed = 4.5;
-        this.maxSpeed = 4.5;
+        this.speed = config.Constants.BASE_AMBULANCE;
+        this.maxSpeed = config.Constants.BASE_AMBULANCE;
     }
 }

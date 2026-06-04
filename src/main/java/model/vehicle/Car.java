@@ -22,6 +22,7 @@ public class Car extends Vehicle {
         this.height = 20;
         this.color = CAR_COLORS[colorIndex % CAR_COLORS.length];
         colorIndex++;
-        this.maxSpeed = 3.0;
+        this.speed = config.Constants.BASE_CAR;
+        this.maxSpeed = config.Constants.BASE_CAR;
     }
 }

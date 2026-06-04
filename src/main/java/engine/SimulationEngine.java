@@ -62,7 +62,11 @@ public class SimulationEngine extends AnimationTimer {
     }
 
     // --- CÁC HÀM GETTER/SETTER CHO GIAO DIỆN ---
-    public void togglePause() { this.isPaused = !this.isPaused; }
+    public void togglePause() {
+        this.isPaused = !this.isPaused;
+        if (this.isPaused) util.SoundManager.pauseAll();
+        else               util.SoundManager.resumeAll();
+    }
     public void setDebugMode(boolean debug) { this.isDebugMode = debug; }
     public SpawnSystem getSpawnSystem() { return spawnSystem; }
     public double getZoomScale() { return zoomScale; }
@@ -89,9 +93,11 @@ public class SimulationEngine extends AnimationTimer {
 
     // --- HÀM ĐỔI BẢN ĐỒ VÀ CĂN GIỮA CAMERA ---
     public void changeMap(String mapType) {
-        vehicles.clear();         
-        cityMap.loadMap(mapType); 
-        zoomScale = 1.0;          
+        vehicles.clear();
+        util.SoundManager.stopAll();
+        spawnSystem.resetTimer();
+        cityMap.loadMap(mapType);
+        zoomScale = 1.0;
         unlockCamera();           
         
         // Thuật toán: Tìm Ngã tư đầu tiên (Ngã tư trung tâm) để chĩa Camera vào
@@ -181,13 +187,14 @@ public class SimulationEngine extends AnimationTimer {
             v.update(vehicles); 
         }
 
-        // 6. Dọn dẹp xe đi quá xa
-        vehicles.removeIf(v -> v.getX() < -2000 || v.getX() > 6000 || v.getY() < -2000 || v.getY() > 6000);
+        // 6. Dọn dẹp xe đi quá xa khỏi map
+        vehicles.removeIf(v -> v.getX() < -1500 || v.getX() > 5000 || v.getY() < -1500 || v.getY() > 5000);
 
-        // 7. Cập nhật Flycam (Bám theo xe)
+        // 7. Flycam bám theo xe; nếu xe bị xóa → reset camera về tâm
         if (lockedVehicle != null) {
             if (!vehicles.contains(lockedVehicle)) {
-                lockedVehicle = null; 
+                lockedVehicle = null;
+                resetCamera(); // xe đã xóa → camera về trọng tâm
             } else {
                 cameraX = lockedVehicle.getX() - canvas.getWidth() / 2;
                 cameraY = lockedVehicle.getY() - canvas.getHeight() / 2;
@@ -312,13 +319,17 @@ public class SimulationEngine extends AnimationTimer {
                 }
                 gc.setLineDashes(null);
 
-                // b. Vạch dừng chờ đèn đỏ (Stop line) - chỉ vẽ ở nơi có đường
+                // b. Vạch dừng chờ đèn đỏ - bên tay PHẢI của từng chiều xe chạy
+                // Xe đi Nam (xuống): làn phải = Tây (x < nX)
+                // Xe đi Bắc (lên):  làn phải = Đông (x > nX)
+                // Xe đi Tây:        làn phải = Bắc (y < nY)
+                // Xe đi Đông:       làn phải = Nam (y > nY)
                 gc.setStroke(Color.WHITE);
                 gc.setLineWidth(3);
-                if (hasNorth) gc.strokeLine(nX, nY - halfW - 5, nX + halfW, nY - halfW - 5);
-                if (hasSouth) gc.strokeLine(nX - halfW, nY + halfW + 5, nX, nY + halfW + 5);
-                if (hasWest)  gc.strokeLine(nX - halfW - 5, nY - halfW, nX - halfW - 5, nY);
-                if (hasEast)  gc.strokeLine(nX + halfW + 5, nY, nX + halfW + 5, nY + halfW);
+                if (hasNorth) gc.strokeLine(nX - halfW, nY - halfW - 5, nX, nY - halfW - 5); // Tây nửa → xe đi Nam
+                if (hasSouth) gc.strokeLine(nX, nY + halfW + 5, nX + halfW, nY + halfW + 5); // Đông nửa → xe đi Bắc
+                if (hasWest)  gc.strokeLine(nX - halfW - 5, nY, nX - halfW - 5, nY + halfW); // Nam nửa → xe đi Đông
+                if (hasEast)  gc.strokeLine(nX + halfW + 5, nY - halfW, nX + halfW + 5, nY); // Bắc nửa → xe đi Tây
 
                 // c. Vạch dẫn hướng ôm cua (Guide Arcs) - vàng mờ
                 gc.setStroke(Color.rgb(241, 196, 15, 0.4));

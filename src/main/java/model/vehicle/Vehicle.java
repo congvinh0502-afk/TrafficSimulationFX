@@ -18,8 +18,12 @@ public abstract class Vehicle {
     protected double bezierT = 0;         
     protected double p0x, p0y, p1x, p1y, p2x, p2y; 
     
+    // --- WAYPOINTS (vòng xuyến) ---
+    private java.util.List<double[]> waypoints = new java.util.ArrayList<>();
+    private int waypointIndex = 0;
+
     // --- BIẾN NHƯỜNG ĐƯỜNG & CHUYỂN LÀN ---
-    protected int yieldTimer = 0; 
+    protected int yieldTimer = 0;
     protected boolean isChangingLane = false;
     protected double laneChangeProgress = 0;  
     protected double laneChangeDirection = 0; 
@@ -39,18 +43,42 @@ public abstract class Vehicle {
     // =======================================================
     // BỘ NÃO DI CHUYỂN (TỰ ĐỘNG TÍNH TOÁN TỌA ĐỘ)
     // =======================================================
+    // --- WAYPOINT API ---
+    public void setWaypoints(java.util.List<double[]> pts) {
+        waypoints = new java.util.ArrayList<>(pts);
+        waypointIndex = 0;
+        isTurning = false; // Tắt Bezier khi dùng waypoints
+    }
+    public void clearWaypoints() { waypoints.clear(); waypointIndex = 0; }
+    public boolean hasWaypoints() { return waypointIndex < waypoints.size(); }
+
     public void update(List<Vehicle> allVehicles) {
-        if (isBroken) {
-            this.speed = 0;
+        if (isBroken) { this.speed = 0; return; }
+
+        // 0. FOLLOWING WAYPOINTS (vòng xuyến - ưu tiên cao nhất)
+        if (hasWaypoints()) {
+            double[] target = waypoints.get(waypointIndex);
+            double dx = target[0] - this.x;
+            double dy = target[1] - this.y;
+            double dist = Math.hypot(dx, dy);
+            if (dist < 6) {
+                waypointIndex++;
+                if (waypointIndex >= waypoints.size()) clearWaypoints();
+            } else {
+                this.angle = Math.toDegrees(Math.atan2(dy, dx));
+                double ar = Math.toRadians(this.angle);
+                this.x += Math.min(speed, dist) * Math.cos(ar);
+                this.y += Math.min(speed, dist) * Math.sin(ar);
+            }
             return;
         }
 
-        // 1. ĐANG NHƯỜNG ĐƯỜNG xe ưu tiên (chỉ giảm tốc, không dạt ngang để tránh ra cỏ)
+        // 1. NHƯỜNG ĐƯỜNG xe ưu tiên (chỉ giảm tốc)
         if (yieldTimer > 0 && !isTurning) {
             yieldTimer--;
             this.speed = Math.max(0, this.speed - 0.12);
         }
-        // 2. ĐANG RẼ TẠI NGÃ TƯ (Chạy theo đường cong Bezier)
+        // 2. ĐANG RẼ TẠI NGÃ TƯ (Bezier)
         else if (isTurning) {
             double step = 0.02; // Tốc độ rẽ (Càng nhỏ càng mượt)
             bezierT += step;
@@ -75,14 +103,11 @@ public abstract class Vehicle {
         // 3. ĐI THẲNG BÌNH THƯỜNG & PHANH DỰ ĐOÁN
         else {
             // Radar quét xe phía trước
+            // Radar nhẹ để giảm tốc khi có xe cản trước (CollisionSystem xử lý toàn bộ acceleration)
             Vehicle frontVehicle = detectVehicleAhead(allVehicles, 100);
             if (frontVehicle != null) {
                 double dist = Math.hypot(frontVehicle.getX() - this.x, frontVehicle.getY() - this.y);
-                if (dist < 80) {
-                    this.speed = Math.max(0, this.speed * 0.95); // Rà phanh mượt
-                }
-            } else {
-                if (this.speed < maxSpeed) this.speed += 0.05; // Tăng tốc dần
+                if (dist < 60) this.speed = Math.max(0, this.speed * 0.93);
             }
 
             // Logic chuyển làn lạng lách (nếu có)

@@ -120,12 +120,16 @@ public class CollisionSystem {
                     }
                 }
             } else {
-                // 1. Lấy tốc độ gốc và NHÂN VỚI HỆ SỐ TỪ UI (Thanh trượt)
-                double baseSpeed = 3.0 * config.Constants.SPEED_CAR; 
-                if (current instanceof model.vehicle.FireTruck) baseSpeed = 4.0 * config.Constants.SPEED_FIRETRUCK;
-                else if (current instanceof model.vehicle.EmergencyVehicle) baseSpeed = 4.5 * config.Constants.SPEED_AMBULANCE; 
-                else if (current instanceof model.vehicle.Motorbike) baseSpeed = 3.5 * config.Constants.SPEED_MOTORBIKE;
-                else if (current instanceof model.vehicle.Bicycle) baseSpeed = 1.2 * config.Constants.SPEED_BICYCLE;
+                // Tốc độ cơ sở × hệ số từ thanh trượt UI
+                double baseSpeed = config.Constants.BASE_CAR * config.Constants.SPEED_CAR;
+                if (current instanceof model.vehicle.FireTruck)
+                    baseSpeed = config.Constants.BASE_FIRETRUCK * config.Constants.SPEED_FIRETRUCK;
+                else if (current instanceof model.vehicle.EmergencyVehicle)
+                    baseSpeed = config.Constants.BASE_AMBULANCE * config.Constants.SPEED_AMBULANCE;
+                else if (current instanceof model.vehicle.Motorbike)
+                    baseSpeed = config.Constants.BASE_MOTORBIKE * config.Constants.SPEED_MOTORBIKE;
+                else if (current instanceof model.vehicle.Bicycle)
+                    baseSpeed = config.Constants.BASE_BICYCLE * config.Constants.SPEED_BICYCLE;
 
                 // 2. Chuyển qua cho "Bộ não" tính toán xem tài xế này muốn phóng bao nhiêu
                 double maxSpeed = current.getStrategy().calculateMaxSpeed(baseSpeed);

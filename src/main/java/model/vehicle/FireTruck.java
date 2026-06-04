@@ -8,7 +8,7 @@ public class FireTruck extends EmergencyVehicle {
         this.width = 65;
         this.height = 25;
         this.color = Color.web("#c0392b");
-        this.speed = 4.0;
-        this.maxSpeed = 4.0; 
+        this.speed = config.Constants.BASE_FIRETRUCK;
+        this.maxSpeed = config.Constants.BASE_FIRETRUCK; 
     }
 }

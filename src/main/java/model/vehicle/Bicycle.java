@@ -8,7 +8,7 @@ public class Bicycle extends Vehicle {
         this.width = 15;
         this.height = 6;
         this.color = Color.web("#2ecc71");
-        this.speed = 1.2;
-        this.maxSpeed = 1.2; // Xe đạp không vượt 1.2
+        this.speed = config.Constants.BASE_BICYCLE;
+        this.maxSpeed = config.Constants.BASE_BICYCLE;
     }
 }

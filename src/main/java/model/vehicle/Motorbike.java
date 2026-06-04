@@ -8,7 +8,7 @@ public class Motorbike extends Vehicle {
         this.width = 18;
         this.height = 10;
         this.color = Color.web("#f1c40f");
-        this.speed = 3.5;
-        this.maxSpeed = 3.5;
+        this.speed = config.Constants.BASE_MOTORBIKE;
+        this.maxSpeed = config.Constants.BASE_MOTORBIKE;
     }
 }
