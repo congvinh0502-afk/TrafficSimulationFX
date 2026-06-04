@@ -1,5 +1,8 @@
 package engine;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import config.Constants;
 import javafx.animation.AnimationTimer;
 import javafx.scene.canvas.Canvas;
@@ -9,12 +12,12 @@ import javafx.scene.shape.StrokeLineCap;
 import model.map.CityMap;
 import model.map.IntersectionNode;
 import model.map.RoadEdge;
-import java.util.ArrayList;
-import java.util.List;
+import model.traffic.TrafficLight;
 import model.vehicle.Vehicle;
-import system.MovementSystem;
+import system.CollisionSystem;
+import system.MovementSystem; // <--- THÊM DÒNG NÀY VÀO
 import system.SpawnSystem;
-import system.CollisionSystem; // <--- THÊM DÒNG NÀY VÀO
+import system.TrafficRuleSystem;
 import view.VehicleRenderer;
 
 public class SimulationEngine extends AnimationTimer {
