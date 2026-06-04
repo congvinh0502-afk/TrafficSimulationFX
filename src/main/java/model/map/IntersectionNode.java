@@ -11,7 +11,8 @@ public class IntersectionNode {
     private String id;
     private double x, y;
     private NodeType type;
-    private LightMode lightMode; // Chế độ hiển thị của ngã tư này
+    private LightMode lightMode;
+    private boolean isSpawnNode = false; // Node ngoài rìa map, chỉ dùng để spawn xe
     
     private TrafficLight lightNorth = new TrafficLight(TrafficLight.Phase.GREEN);
     private TrafficLight lightSouth = new TrafficLight(TrafficLight.Phase.GREEN);
@@ -27,14 +28,13 @@ public class IntersectionNode {
     public IntersectionNode(String id, double x, double y, NodeType type) {
         this.id = id; this.x = x; this.y = y; this.type = type;
         applyPhaseStates();
-        
-        /*// Bốc thăm ngẫu nhiên chế độ đèn cho ngã tư này
-        int rand = new Random().nextInt(3);
-        if (rand == 0) this.lightMode = LightMode.NORMAL;
-        else if (rand == 1) this.lightMode = LightMode.COUNTDOWN;
-        else this.lightMode = LightMode.SMART_COUNTDOWN;*/
-        // Mặc định khởi tạo là loại "Đếm thông minh <=10s" thay vì bốc thăm ngẫu nhiên
         this.lightMode = LightMode.SMART_COUNTDOWN;
+    }
+
+    public IntersectionNode(String id, double x, double y, NodeType type, boolean isSpawnNode) {
+        this(id, x, y, type);
+        this.isSpawnNode = isSpawnNode;
+        
     }
     
     public void updateLights() {
@@ -75,6 +75,7 @@ public class IntersectionNode {
         }
     }
 
+    public boolean isSpawnNode() { return isSpawnNode; }
     public TrafficLight getLightNorth() { return lightNorth; } public TrafficLight getLightSouth() { return lightSouth; }
     public TrafficLight getLightEast() { return lightEast; } public TrafficLight getLightWest() { return lightWest; }
     public String getId() { return id; } public double getX() { return x; } public double getY() { return y; }

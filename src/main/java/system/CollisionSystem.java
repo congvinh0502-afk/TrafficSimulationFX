@@ -58,7 +58,7 @@ public class CollisionSystem {
                         continue; 
                     }
 
-                    if (axialDist > 0 && axialDist < minDist && lateralDist < 20) {
+                    if (axialDist > 0 && axialDist < minDist && lateralDist < 25) {
                         minDist = axialDist;
                         blocker = other;
                     }

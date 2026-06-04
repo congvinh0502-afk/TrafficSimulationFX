@@ -54,26 +54,46 @@ public class MainView {
         secMap.getChildren().addAll(mapRow1, mapRow2);
 
         // Khối 2: LƯU LƯỢNG & ĐIỀU KHIỂN CHUNG
-        VBox secFlow = createSection("🚦 LƯU LƯỢNG & ĐIỀU KHIỂN");
+        VBox secFlow = createSection("🚦 LƯU LƯỢNG");
+        Label lblSpawn = new Label("Mật độ xe (Ít → Nhiều):");
+        lblSpawn.setTextFill(Color.web("#bdc3c7"));
+        Slider spawnSlider = new Slider(2, 60, 30);
+        spawnSlider.valueProperty().addListener((obs, oldVal, newVal) ->
+                engine.getSpawnSystem().setSpawnDelay(62 - newVal.intValue()));
+
+        CheckBox chkStopSpawn = createCheck("Dừng Spawn Xe", false);
+        chkStopSpawn.setOnAction(e ->
+                engine.getSpawnSystem().setSpawnEnabled(!chkStopSpawn.isSelected()));
+
+        Button btnClear = new Button("🗑 Xóa tất cả xe");
+        btnClear.setMaxWidth(Double.MAX_VALUE);
+        btnClear.setStyle("-fx-background-color: #e74c3c; -fx-text-fill: white;");
+        btnClear.setOnAction(e -> { util.SoundManager.playHorn(); engine.clearAllVehicles(); });
+
+        secFlow.getChildren().addAll(lblSpawn, spawnSlider, chkStopSpawn, btnClear);
+
+        // Khối ĐIỀU KHIỂN (pause + auto lights + police)
+        VBox secCtrl = createSection("🎛 ĐIỀU KHIỂN");
         Button btnPause = new Button("⏸ Tạm dừng / Tiếp tục");
         btnPause.setMaxWidth(Double.MAX_VALUE);
         btnPause.setStyle("-fx-background-color: #ecf0f1; -fx-text-fill: #2c3e50; -fx-font-weight: bold;");
         btnPause.setOnAction(e -> engine.togglePause());
 
-        Label lblSpawn = new Label("Mật độ xe (Ít -> Nhiều):");
-        lblSpawn.setTextFill(Color.web("#bdc3c7"));
-        Slider spawnSlider = new Slider(2, 60, 30);
-        spawnSlider.valueProperty().addListener((obs, oldVal, newVal) -> engine.getSpawnSystem().setSpawnDelay(62 - newVal.intValue()));
-        
-        Button btnClear = new Button("🗑 Xóa tất cả xe");
-        btnClear.setMaxWidth(Double.MAX_VALUE);
-        btnClear.setStyle("-fx-background-color: #e74c3c; -fx-text-fill: white;");
-        btnClear.setOnAction(e -> engine.clearAllVehicles()); // Cần thêm hàm này vào Engine
-        btnClear.setOnAction(e -> {
-            util.SoundManager.playHorn(); // ---> GỌI TIẾNG CÒI NGAY LÚC CLICK BẰNG TAY
-            engine.clearAllVehicles();
+        ToggleGroup modeGroup = new ToggleGroup();
+        RadioButton rbAuto   = createRadio("Tự động", modeGroup);
+        RadioButton rbManual = createRadio("Thủ công (click đèn)", modeGroup);
+        rbAuto.setSelected(true);
+        modeGroup.selectedToggleProperty().addListener((obs, old, newVal) -> {
+            config.Constants.AUTO_LIGHTS = rbAuto.isSelected();
         });
-        secFlow.getChildren().addAll(btnPause, lblSpawn, spawnSlider, btnClear);
+
+        Button btnPolice = new Button("👮 Điều tiết Cảnh sát");
+        btnPolice.setMaxWidth(Double.MAX_VALUE);
+        btnPolice.setStyle("-fx-background-color: #2980b9; -fx-text-fill: white;");
+        btnPolice.setOnAction(e -> engine.togglePoliceMode());
+
+        secCtrl.getChildren().addAll(btnPause,
+                new HBox(20, rbAuto, rbManual), btnPolice);
 
         // Khối 3: CAMERA ZOOM
         VBox secZoom = createSection("🔍 ZOOM");
@@ -99,15 +119,13 @@ public class MainView {
 
         // Khối 5: CÀI ĐẶT HỆ THỐNG
         VBox secSettings = createSection("⚙ CÀI ĐẶT HỆ THỐNG");
-        CheckBox chkAutoLight = createCheck("Đèn Tự động", true);
-        chkAutoLight.setOnAction(e -> config.Constants.AUTO_LIGHTS = chkAutoLight.isSelected());
         CheckBox chkRain = createCheck("Trời mưa (Đường trơn)", false);
         chkRain.setOnAction(e -> config.Constants.IS_RAINING = chkRain.isSelected());
         CheckBox chkMute = createCheck("Tắt Âm thanh", false);
         chkMute.setOnAction(e -> util.SoundManager.isMuted = chkMute.isSelected());
         CheckBox chkDebug = createCheck("Bật tia Laser (Debug)", false);
         chkDebug.setOnAction(e -> engine.setDebugMode(chkDebug.isSelected()));
-        secSettings.getChildren().addAll(chkAutoLight, chkRain, chkMute, chkDebug);
+        secSettings.getChildren().addAll(chkRain, chkMute, chkDebug);
 
         // Khối 6: HIỂN THỊ
         VBox secDisplay = createSection("📺 HIỂN THỊ");
@@ -143,7 +161,7 @@ public class MainView {
         secLightMode.getChildren().add(cbLight);
         
         // Đã bổ sung secTime và secLightMode vào danh sách
-        panel.getChildren().addAll(secMap, secFlow, secZoom, secSpeed, secSettings, secDisplay, secTime, secLightMode);
+        panel.getChildren().addAll(secMap, secFlow, secCtrl, secZoom, secSpeed, secSettings, secDisplay, secTime, secLightMode);
         ScrollPane scroll = new ScrollPane(panel);
         scroll.setFitToWidth(true);
         scroll.setStyle("-fx-background: #1e272e; -fx-border-color: #1e272e;");

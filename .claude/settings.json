@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"/c/Users/VINH  - PC/Desktop/\")",
+      "Read(//c/Users/VINH  - PC/Desktop//**)",
+      "Bash(grep -r \"TODO\\\\|FIXME\\\\|BUG\\\\|HACK\\\\|XXX\" \"/c/Users/VINH  - PC/Desktop/TrafficSimulationFX/src/main/java\" --include=\"*.java\" 2>/dev/null | head -30)",
+      "Read(//c/Users/VINH - PC/Desktop/TrafficSimulationFX/src/main/**)",
+      "Bash(grep -r \"--->\" \"/c/Users/VINH - PC/Desktop/TrafficSimulationFX/src/main/java\" --include=\"*.java\")",
+      "Bash(mvn compile *)"
+    ]
+  }
+}

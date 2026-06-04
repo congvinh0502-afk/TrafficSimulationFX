@@ -1,72 +1,87 @@
 package system;
 
 import config.Constants;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import model.map.CityMap;
 import model.map.RoadEdge;
-import model.vehicle.Car;
-import model.vehicle.Vehicle;
+import model.vehicle.*;
 
 public class SpawnSystem {
     private Random random = new Random();
-    private int spawnDelay = 20; // Tốc độ sinh xe mặc định (Càng nhỏ xe càng đông)
+    private int spawnDelay = 20;
+    private boolean spawnEnabled = true;
 
-    public void setSpawnDelay(int delay) {
-        this.spawnDelay = delay;
-    }
+    public void setSpawnDelay(int delay) { this.spawnDelay = delay; }
+    public void setSpawnEnabled(boolean enabled) { this.spawnEnabled = enabled; }
 
     public void spawnRandom(List<Vehicle> vehicles, CityMap cityMap) {
-        int currentDelay = Math.max(1, spawnDelay); 
-        
+        if (!spawnEnabled) return;
+        int currentDelay = Math.max(1, spawnDelay);
         if (random.nextInt(currentDelay) != 0) return;
-        if (cityMap.getRoads().isEmpty()) return;
-        
-        RoadEdge road = cityMap.getRoads().get(random.nextInt(cityMap.getRoads().size()));
+
+        // Chỉ chọn các đường bắt đầu từ spawn node (ngoài rìa màn hình)
+        List<RoadEdge> spawnableRoads = new ArrayList<>();
+        for (RoadEdge road : cityMap.getRoads()) {
+            if (road.getStartNode().isSpawnNode()) {
+                spawnableRoads.add(road);
+            }
+        }
+        // Fallback nếu không có spawn node nào
+        if (spawnableRoads.isEmpty()) spawnableRoads = cityMap.getRoads();
+        if (spawnableRoads.isEmpty()) return;
+
+        RoadEdge road = spawnableRoads.get(random.nextInt(spawnableRoads.size()));
         double sx = road.getStartNode().getX();
         double sy = road.getStartNode().getY();
         double ex = road.getEndNode().getX();
         double ey = road.getEndNode().getY();
-        
         double angleRad = Math.atan2(ey - sy, ex - sx);
-        
-        // --- 1. BỐC THĂM LOẠI XE VÀ CHỌN LÀN ĐƯỜNG ---
+
+        // Phân phối loại xe: 3% Ambulance, 2% FireTruck, 10% Bicycle, 25% Motorbike, 60% Car
         int randType = random.nextInt(100);
+
+        // Tính offset làn: xe thường dùng 1 trong 2 làn (15px hoặc 45px từ tim đường)
         double offset;
-        
         if (randType < 5) {
-            // Xe cứu thương đi cực gắt: Chạy đè vạch phân làn ở giữa (30px)
-            offset = 30; 
+            offset = 30; // Xe ưu tiên chạy giữa vạch tim đường
         } else {
-            // Xe thường: Bốc thăm Làn 1 (45px) hoặc Làn 2 (15px)
-            offset = random.nextBoolean() ? 45 : 15; 
+            offset = random.nextBoolean() ? 15 : 45;
         }
-        
-        // --- 2. TÍNH TỌA ĐỘ VÀ TẠO XE ---
-        double spawnX = sx + Math.cos(angleRad + Math.PI/2) * offset;
-        double spawnY = sy + Math.sin(angleRad + Math.PI/2) * offset;
-        
+
+        double spawnX = sx + Math.cos(angleRad + Math.PI / 2) * offset;
+        double spawnY = sy + Math.sin(angleRad + Math.PI / 2) * offset;
+        double angle  = Math.toDegrees(angleRad);
+
         Vehicle newVehicle;
-        if (randType < 5) {
-            newVehicle = new model.vehicle.EmergencyVehicle(spawnX, spawnY, Math.toDegrees(angleRad));
-        } else if (randType < 35) {
-            newVehicle = new model.vehicle.Motorbike(spawnX, spawnY, Math.toDegrees(angleRad));
+        if (randType < 3) {
+            newVehicle = new EmergencyVehicle(spawnX, spawnY, angle);
+        } else if (randType < 5) {
+            newVehicle = new FireTruck(spawnX, spawnY, angle);
+        } else if (randType < 15) {
+            newVehicle = new Bicycle(spawnX, spawnY, angle);
+        } else if (randType < 40) {
+            newVehicle = new Motorbike(spawnX, spawnY, angle);
         } else {
-            newVehicle = new Car(spawnX, spawnY, Math.toDegrees(angleRad));
+            newVehicle = new Car(spawnX, spawnY, angle);
         }
-        
+
         newVehicle.setLaneOffset(offset);
-        // ---> MỚI: LẮP RÁP BỘ NÃO (STRATEGY) CHO TÀI XẾ
-        if (newVehicle instanceof model.vehicle.EmergencyVehicle) {
-            newVehicle.setStrategy(new model.strategy.EmergencyDriver()); // Xe ưu tiên
+
+        // Gắn bộ não lái xe (Strategy)
+        if (newVehicle instanceof EmergencyVehicle) {
+            newVehicle.setStrategy(new model.strategy.EmergencyDriver());
+        } else if (newVehicle instanceof Bicycle) {
+            newVehicle.setStrategy(new model.strategy.NormalDriver()); // Xe đạp luôn tuân thủ luật
         } else {
-            // Ô tô/Xe máy bình thường: 20% xác suất gặp tài xế "hổ báo", 80% là tài xế ngoan
             if (random.nextInt(100) < 20) {
                 newVehicle.setStrategy(new model.strategy.AggressiveDriver());
             } else {
                 newVehicle.setStrategy(new model.strategy.NormalDriver());
             }
         }
+
         vehicles.add(newVehicle);
     }
 }

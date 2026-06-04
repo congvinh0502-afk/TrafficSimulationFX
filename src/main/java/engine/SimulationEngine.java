@@ -58,7 +58,7 @@ public class SimulationEngine extends AnimationTimer {
         }
 
         // ---> QUAN TRỌNG: Gọi hàm đổi Map ngay lúc bật app để Camera nhảy đúng vào giữa đường!
-        changeMap("Mạng lưới rộng");
+        changeMap("Mạng lưới");
     }
 
     // --- CÁC HÀM GETTER/SETTER CHO GIAO DIỆN ---
@@ -66,6 +66,14 @@ public class SimulationEngine extends AnimationTimer {
     public void setDebugMode(boolean debug) { this.isDebugMode = debug; }
     public SpawnSystem getSpawnSystem() { return spawnSystem; }
     public double getZoomScale() { return zoomScale; }
+
+    /** Chế độ cảnh sát: đèn tất cả đỏ, sau đó cho từng hướng xanh lần lượt */
+    public void togglePoliceMode() {
+        config.Constants.AUTO_LIGHTS = false;
+        for (model.map.IntersectionNode node : cityMap.getNodes()) {
+            node.manualToggle();
+        }
+    }
     
     public void zoomCamera(double factor) {
         this.zoomScale *= factor;
@@ -263,46 +271,48 @@ public class SimulationEngine extends AnimationTimer {
                 gc.setFill(Color.web("#2ecc71")); gc.fillOval(nX - radius, nY - radius, radius * 2, radius * 2);
                 gc.setStroke(Color.WHITE); gc.setLineWidth(2); gc.strokeOval(nX - radius, nY - radius, radius * 2, radius * 2);
             } else {
-                // --- ĐỒ HỌA NGÃ 3, NGÃ 4 (THÔNG MINH) ---
-                if (nodeWidth >= 80) {
-                    // TÍNH NĂNG MỚI: Quét xem ngã tư này có đường ở những hướng nào
-                    boolean hasNorth = false, hasSouth = false, hasWest = false, hasEast = false;
-                    for (RoadEdge r : cityMap.getRoads()) {
-                        if (r.getStartNode() == node || r.getEndNode() == node) {
-                            IntersectionNode neighbor = (r.getStartNode() == node) ? r.getEndNode() : r.getStartNode();
-                            if (neighbor.getY() < node.getY() - 10) hasNorth = true;
-                            if (neighbor.getY() > node.getY() + 10) hasSouth = true;
-                            if (neighbor.getX() < node.getX() - 10) hasWest = true;
-                            if (neighbor.getX() > node.getX() + 10) hasEast = true;
-                        }
+                // --- ĐỒ HỌA NGÃ 3, NGÃ 4 (THÔNG MINH theo hướng đường) ---
+                boolean hasNorth = false, hasSouth = false, hasWest = false, hasEast = false;
+                for (RoadEdge r : cityMap.getRoads()) {
+                    if (r.getStartNode() == node || r.getEndNode() == node) {
+                        IntersectionNode neighbor = (r.getStartNode() == node) ? r.getEndNode() : r.getStartNode();
+                        if (neighbor.getY() < node.getY() - 10) hasNorth = true;
+                        if (neighbor.getY() > node.getY() + 10) hasSouth = true;
+                        if (neighbor.getX() < node.getX() - 10) hasWest = true;
+                        if (neighbor.getX() > node.getX() + 10) hasEast = true;
                     }
-                // a. Vạch kẻ đường đi bộ (Zebra Crossing) - Làm dày và đậm hơn để dễ thấy
+                }
+
+                // a. Vạch kẻ đường đi bộ (Zebra Crossing) - chỉ vẽ ở nơi có đường
                 gc.setStroke(Color.WHITE);
                 gc.setLineWidth(6);
                 gc.setLineDashes(4, 6);
-                gc.strokeLine(nX - halfW + 5, nY - halfW - 15, nX + halfW - 5, nY - halfW - 15); 
-                gc.strokeLine(nX - halfW + 5, nY + halfW + 15, nX + halfW - 5, nY + halfW + 15); 
-                gc.strokeLine(nX - halfW - 15, nY - halfW + 5, nX - halfW - 15, nY + halfW - 5); 
-                gc.strokeLine(nX + halfW + 15, nY - halfW + 5, nX + halfW + 15, nY + halfW - 5); 
+                if (hasNorth || hasSouth) {
+                    gc.strokeLine(nX - halfW + 5, nY - halfW - 15, nX + halfW - 5, nY - halfW - 15);
+                    gc.strokeLine(nX - halfW + 5, nY + halfW + 15, nX + halfW - 5, nY + halfW + 15);
+                }
+                if (hasWest || hasEast) {
+                    gc.strokeLine(nX - halfW - 15, nY - halfW + 5, nX - halfW - 15, nY + halfW - 5);
+                    gc.strokeLine(nX + halfW + 15, nY - halfW + 5, nX + halfW + 15, nY + halfW - 5);
+                }
                 gc.setLineDashes(null);
 
-                // b. Vạch dừng chờ đèn đỏ (Stop line) - ĐÃ FIX LỖI TYPO
+                // b. Vạch dừng chờ đèn đỏ (Stop line) - chỉ vẽ ở nơi có đường
+                gc.setStroke(Color.WHITE);
                 gc.setLineWidth(3);
-                gc.strokeLine(nX, nY - halfW - 5, nX + halfW, nY - halfW - 5); // Chiều từ Bắc xuống
-                gc.strokeLine(nX - halfW, nY + halfW + 5, nX, nY + halfW + 5); // Chiều từ Nam lên
-                
-                // ---> ĐÂY LÀ DÒNG FIX LỖI THANH TRẮNG DÀI (Thay nX thành nY)
-                gc.strokeLine(nX - halfW - 5, nY - halfW, nX - halfW - 5, nY); // Chiều từ Tây sang
-                gc.strokeLine(nX + halfW + 5, nY, nX + halfW + 5, nY + halfW); // Chiều từ Đông sang
+                if (hasNorth) gc.strokeLine(nX, nY - halfW - 5, nX + halfW, nY - halfW - 5);
+                if (hasSouth) gc.strokeLine(nX - halfW, nY + halfW + 5, nX, nY + halfW + 5);
+                if (hasWest)  gc.strokeLine(nX - halfW - 5, nY - halfW, nX - halfW - 5, nY);
+                if (hasEast)  gc.strokeLine(nX + halfW + 5, nY, nX + halfW + 5, nY + halfW);
 
-                // c. Vạch dẫn hướng ôm cua trong tâm ngã tư (Guide Lines) - Đường vòng cung vàng mờ
-                gc.setStroke(Color.rgb(241, 196, 15, 0.4)); // Màu vàng nhạt, trong suốt 40%
+                // c. Vạch dẫn hướng ôm cua (Guide Arcs) - vàng mờ
+                gc.setStroke(Color.rgb(241, 196, 15, 0.4));
                 gc.setLineWidth(1.5);
                 gc.setLineDashes(5, 10);
-                gc.strokeArc(nX - halfW, nY - halfW, halfW, halfW, 270, 90, javafx.scene.shape.ArcType.OPEN); // Góc Tây-Bắc
-                gc.strokeArc(nX, nY - halfW, halfW, halfW, 180, 90, javafx.scene.shape.ArcType.OPEN);         // Góc Đông-Bắc
-                gc.strokeArc(nX - halfW, nY, halfW, halfW, 0, 90, javafx.scene.shape.ArcType.OPEN);           // Góc Tây-Nam
-                gc.strokeArc(nX, nY, halfW, halfW, 90, 90, javafx.scene.shape.ArcType.OPEN);                  // Góc Đông-Nam
+                gc.strokeArc(nX - halfW, nY - halfW, halfW, halfW, 270, 90, javafx.scene.shape.ArcType.OPEN);
+                gc.strokeArc(nX, nY - halfW, halfW, halfW, 180, 90, javafx.scene.shape.ArcType.OPEN);
+                gc.strokeArc(nX - halfW, nY, halfW, halfW, 0, 90, javafx.scene.shape.ArcType.OPEN);
+                gc.strokeArc(nX, nY, halfW, halfW, 90, 90, javafx.scene.shape.ArcType.OPEN);
                 gc.setLineDashes(null);
             }
         }
