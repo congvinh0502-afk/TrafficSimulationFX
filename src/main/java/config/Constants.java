@@ -8,6 +8,7 @@ public class Constants {
     // Cấu hình đường sá
     public static final double LANE_WIDTH = 30;
     public static final double ROAD_WIDTH = LANE_WIDTH * 4; // 120px tổng
+    public static final double ROUNDABOUT_RADIUS = 100;     // bán kính nền nhựa bùng binh
 
     // Tốc độ cơ sở (px/frame) cho từng loại xe – nhỏ hơn để mô phỏng thực tế hơn
     public static final double BASE_CAR       = 2.2;

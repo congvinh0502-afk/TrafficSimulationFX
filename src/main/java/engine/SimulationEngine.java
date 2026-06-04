@@ -281,43 +281,39 @@ public class SimulationEngine extends AnimationTimer {
             double nX = node.getX(); double nY = node.getY();
             double halfW = Constants.ROAD_WIDTH / 2;
 
-            // Xóa các vạch kẻ đường thô bạo đâm xuyên vào giữa ngã tư
-            gc.setFill(Color.web("#34495e"));
-            gc.fillRect(nX - halfW, nY - halfW, Constants.ROAD_WIDTH, Constants.ROAD_WIDTH);
-            
+            // Xóa vạch kẻ đường đâm xuyên vào giữa ngã tư (chỉ cho NGÃ 3/4)
+            if (node.getType() != IntersectionNode.NodeType.FIVE_WAY) {
+                gc.setFill(Color.web("#34495e"));
+                gc.fillRect(nX - halfW, nY - halfW, Constants.ROAD_WIDTH, Constants.ROAD_WIDTH);
+            }
+
             if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
-                // --- ĐỒ HỌA BÙNG BINH (NGÃ 5) ---
-                double radius = 40;
-                double s45 = Math.sqrt(2.0) / 2; // cos/sin 45°
+                // --- ĐỒ HỌA BÙNG BINH (NGÃ 5) – KHỐI DUY NHẤT ---
+                double islandR  = 40;
+                double junctionR = config.Constants.ROUNDABOUT_RADIUS; // 100
+                double ringR     = (islandR + junctionR) / 2.0;        // 70
 
-                // Đảo cỏ xanh ở giữa
-                gc.setFill(Color.web("#2ecc71")); gc.fillOval(nX - radius, nY - radius, radius * 2, radius * 2);
-                gc.setStroke(Color.WHITE); gc.setLineWidth(2); gc.strokeOval(nX - radius, nY - radius, radius * 2, radius * 2);
+                // a) Nền nhựa tròn che mọi vạch đường đâm vào tâm
+                gc.setFill(Color.web("#34495e"));
+                gc.fillOval(nX - junctionR, nY - junctionR, junctionR * 2, junctionR * 2);
 
-                // Vòng tròn vạch đi bộ quanh bùng binh
-                gc.setStroke(Color.WHITE); gc.setLineWidth(5); gc.setLineDashes(4, 8);
-                gc.strokeOval(nX - halfW, nY - halfW, halfW * 2, halfW * 2);
+                // b) Vòng phân làn (dashed ring)
+                gc.setStroke(Color.WHITE); gc.setLineWidth(2); gc.setLineDashes(12, 10);
+                gc.strokeOval(nX - ringR, nY - ringR, ringR * 2, ringR * 2);
                 gc.setLineDashes(null);
 
-                // Vạch dừng cho 4 hướng cardinal (offset +15)
-                gc.setStroke(Color.WHITE); gc.setLineWidth(3);
-                gc.strokeLine(nX - halfW, nY - halfW - 15, nX,        nY - halfW - 15); // Bắc
-                gc.strokeLine(nX,        nY + halfW + 15, nX + halfW, nY + halfW + 15); // Nam
-                gc.strokeLine(nX - halfW - 15, nY,        nX - halfW - 15, nY + halfW); // Tây
-                gc.strokeLine(nX + halfW + 15, nY - halfW, nX + halfW + 15, nY);        // Đông
-                // Vạch dừng cánh TâyBắc (chéo 225°, chỉ làn phải)
-                gc.strokeLine(nX - (halfW+15)*s45, nY - (halfW+15)*s45,
-                              nX - 15*s45,         nY - (2*halfW+15)*s45);
+                // c) Đảo cỏ xanh
+                gc.setFill(Color.web("#2ecc71"));
+                gc.fillOval(nX - islandR, nY - islandR, islandR * 2, islandR * 2);
+                gc.setStroke(Color.WHITE); gc.setLineWidth(2);
+                gc.strokeOval(nX - islandR, nY - islandR, islandR * 2, islandR * 2);
 
-                // Vạch đi bộ cho 4 hướng cardinal (zebra dashes, offset +5)
-                gc.setStroke(Color.WHITE); gc.setLineWidth(6); gc.setLineDashes(4, 6);
-                gc.strokeLine(nX - halfW + 5, nY - halfW - 5, nX + halfW - 5, nY - halfW - 5); // Bắc
-                gc.strokeLine(nX - halfW + 5, nY + halfW + 5, nX + halfW - 5, nY + halfW + 5); // Nam
-                gc.strokeLine(nX - halfW - 5, nY - halfW + 5, nX - halfW - 5, nY + halfW - 5); // Tây
-                gc.strokeLine(nX + halfW + 5, nY - halfW + 5, nX + halfW + 5, nY + halfW - 5); // Đông
-                // Vạch đi bộ cánh TâyBắc (chéo 135°, full width)
-                gc.strokeLine(nX - 2*halfW*s45, nY - 10*s45, nX - 10*s45, nY - 2*halfW*s45);
-                gc.setLineDashes(null);
+                // d) Vạch đi bộ + vạch dừng cho từng cánh
+                drawArmMarkings(nX, nY,   0, junctionR, halfW); // Đông
+                drawArmMarkings(nX, nY,  90, junctionR, halfW); // Nam
+                drawArmMarkings(nX, nY, 180, junctionR, halfW); // Tây
+                drawArmMarkings(nX, nY, 270, junctionR, halfW); // Bắc
+                if (node.isHasNW()) drawArmMarkings(nX, nY, 225, junctionR, halfW); // TâyBắc
             } else {
                 // --- ĐỒ HỌA NGÃ 3, NGÃ 4 (THÔNG MINH theo hướng đường) ---
                 boolean hasNorth = false, hasSouth = false, hasWest = false, hasEast = false;
@@ -387,12 +383,13 @@ public class SimulationEngine extends AnimationTimer {
             double off = Constants.ROAD_WIDTH / 2 + 8; // khoảng cách từ tâm đến trụ đèn
 
             if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
-                // 5 đèn: N, S, E, W + NW diagonal
-                drawTrafficLight(gc, node.getLightNorth(), nX,        nY - off - 10);
-                drawTrafficLight(gc, node.getLightSouth(), nX,        nY + off);
-                drawTrafficLight(gc, node.getLightEast(),  nX + off,  nY);
-                drawTrafficLight(gc, node.getLightWest(),  nX - off - 20, nY);
-                drawTrafficLight(gc, node.getLightNW(),    nX - off,  nY - off);
+                double off5 = config.Constants.ROUNDABOUT_RADIUS + 83; // 183 – ngoài mép bùng binh
+                double d45  = Math.cos(Math.toRadians(45)) * off5;
+                drawTrafficLight(gc, node.getLightNorth(), nX - 8,        nY - off5 - 22);
+                drawTrafficLight(gc, node.getLightSouth(), nX - 8,        nY + off5);
+                drawTrafficLight(gc, node.getLightEast(),  nX + off5,     nY - 11);
+                drawTrafficLight(gc, node.getLightWest(),  nX - off5 - 16, nY - 11);
+                if (node.isHasNW()) drawTrafficLight(gc, node.getLightNW(), nX - d45 - 16, nY - d45 - 22);
             } else {
                 // Chỉ vẽ đèn ở hướng có đường thực sự
                 if (node.isHasNorth()) drawTrafficLight(gc, node.getLightNorth(), nX - 12, nY - off - 10);
@@ -439,6 +436,26 @@ public class SimulationEngine extends AnimationTimer {
                 }
             }
         }
+    }
+
+    /** Vẽ vạch đi bộ + vạch dừng cho một cánh bùng binh theo góc angDeg (độ) */
+    private void drawArmMarkings(double cx, double cy, double angDeg, double junctionR, double halfW) {
+        double a  = Math.toRadians(angDeg);
+        double ux = Math.cos(a), uy = Math.sin(a);
+        double px = uy, py = -ux; // perpendicular
+
+        // Vạch đi bộ: junctionR + 55, trải hết bề ngang đường
+        double zd = junctionR + 55;
+        double zx = cx + ux * zd, zy = cy + uy * zd;
+        gc.setStroke(Color.WHITE); gc.setLineWidth(6); gc.setLineDashes(4, 6);
+        gc.strokeLine(zx - px * halfW, zy - py * halfW, zx + px * halfW, zy + py * halfW);
+        gc.setLineDashes(null);
+
+        // Vạch dừng: junctionR + 69 (ngoài vạch đi bộ), nửa đường phía làn xe vào
+        double sd = junctionR + 69;
+        double sx = cx + ux * sd, sy = cy + uy * sd;
+        gc.setLineWidth(3);
+        gc.strokeLine(sx, sy, sx + px * halfW, sy + py * halfW);
     }
 
     private void drawDashedLine(double sx, double sy, double ex, double ey, double offset) {

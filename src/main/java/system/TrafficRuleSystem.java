@@ -15,19 +15,19 @@ public class TrafficRuleSystem {
             continue; 
         }
             IntersectionNode targetNode = null;
-            double minDist = 180; 
+            double minDist = 280; // phat hien som hon de FIVE_WAY co du khoan dung
 
-            // 1. Tìm ngã tư gần nhất trước mặt
+            // 1. Tim nga tu gan nhat truoc mat
             for (IntersectionNode node : nodes) {
                 double dx = node.getX() - v.getX();
                 double dy = node.getY() - v.getY();
-                
+
                 double rad = Math.toRadians(v.getAngle());
                 double dirX = Math.cos(rad);
                 double dirY = Math.sin(rad);
 
-                double axialDist = dx * dirX + dy * dirY; 
-                double lateralDist = Math.abs(dx * (-dirY) + dy * dirX); 
+                double axialDist = dx * dirX + dy * dirY;
+                double lateralDist = Math.abs(dx * (-dirY) + dy * dirX);
 
                 if (axialDist > 0 && axialDist < minDist && lateralDist < 100) {
                     minDist = axialDist;
@@ -38,32 +38,34 @@ public class TrafficRuleSystem {
             if (targetNode == null) continue;
 
             TrafficLight lightToObey = null;
-            
-            // 2. Chuyển đổi góc (Angle) sang Hướng để nhìn đúng đèn
+
+            // 2. Chuyen doi goc sang Huong de nhin dung den
             double angle = v.getAngle() % 360;
             if (angle < 0) angle += 360;
-            
-            if (angle >= 315 || angle < 45) { // Góc ~0: Xe đi từ Tây sang Đông -> Nhìn đèn Tây
+
+            if (angle >= 315 || angle < 45) {
                 lightToObey = targetNode.getLightWest();
-            } else if (angle >= 45 && angle < 135) { // Góc ~90: Xe đi từ Bắc xuống Nam -> Nhìn đèn Bắc
+            } else if (angle >= 45 && angle < 135) {
                 lightToObey = targetNode.getLightNorth();
-            } else if (angle >= 135 && angle < 225) { // Góc ~180: Xe đi từ Đông sang Tây -> Nhìn đèn Đông
+            } else if (angle >= 135 && angle < 225) {
                 lightToObey = targetNode.getLightEast();
-            } else { // Góc ~270: Xe đi từ Nam lên Bắc -> Nhìn đèn Nam
+            } else {
                 lightToObey = targetNode.getLightSouth();
             }
 
             if (lightToObey == null) continue;
 
-            // 3. Phanh khi gặp đèn Đỏ hoặc Vàng
-            // stopDist: xe dừng sao cho đầu xe nằm TRƯỚC vạch dừng (halfW + 15px)
-            // halfW = ROAD_WIDTH/2 = 60. Tâm xe dừng ở 60+15+halfLength ≈ 60+15+20 = 95px từ tâm ngã tư
-            double stopDist = config.Constants.ROAD_WIDTH / 2 + 15 + v.getWidth() / 2;
+            // 3. Phanh khi gap den Do hoac Vang
+            // FIVE_WAY: vach dung tai ROUNDABOUT_RADIUS + 69 = 169px tu tam
+            double stopDist = (targetNode.getType() == IntersectionNode.NodeType.FIVE_WAY)
+                ? config.Constants.ROUNDABOUT_RADIUS + 69 + v.getWidth() / 2
+                : config.Constants.ROAD_WIDTH / 2 + 15 + v.getWidth() / 2;
+
             if (lightToObey.getPhase() == TrafficLight.Phase.RED
                     || lightToObey.getPhase() == TrafficLight.Phase.YELLOW) {
                 if (minDist <= stopDist + 5) {
                     v.setSpeed(0);
-                } else if (minDist < 160) {
+                } else if (minDist < stopDist + 65) {
                     double brakeStrength = Math.sqrt(Math.max(0, 2 * 0.08 * (minDist - stopDist)));
                     v.setSpeed(Math.min(v.getSpeed(), brakeStrength));
                 }
