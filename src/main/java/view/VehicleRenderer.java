@@ -90,12 +90,12 @@ public class VehicleRenderer {
         gc.translate(v.getX(), v.getY());
         gc.rotate(v.getAngle());
 
-        // 1. Đèn pha (headlights) - chỉ bật khi trời tối
+        // 1. Đèn pha (headlights) - chỉ bật khi trời tối, kích thước nhỏ vừa nhìn
         if (darkness > 0.2) {
             gc.setGlobalBlendMode(BlendMode.ADD);
-            gc.setFill(Color.rgb(255, 255, 100, 0.4 * darkness));
-            double[] hx = {v.getWidth() / 2, v.getWidth() / 2 + 130, v.getWidth() / 2 + 130};
-            double[] hy = {0, -55, 55};
+            gc.setFill(Color.rgb(255, 255, 100, 0.55 * darkness));
+            double[] hx = {v.getWidth() / 2, v.getWidth() / 2 + 28, v.getWidth() / 2 + 28};
+            double[] hy = {0, -9, 9};
             gc.fillPolygon(hx, hy, 3);
             gc.setGlobalBlendMode(BlendMode.SRC_OVER);
         }

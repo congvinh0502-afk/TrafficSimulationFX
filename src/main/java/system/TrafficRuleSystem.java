@@ -35,8 +35,7 @@ public class TrafficRuleSystem {
                 }
             }
 
-            // Nếu đường thoáng hoặc là Ngã 5 (Bùng binh) thì cứ đi tiếp, không bắt dừng đèn
-            if (targetNode == null || targetNode.getType() == IntersectionNode.NodeType.FIVE_WAY) continue; 
+            if (targetNode == null) continue;
 
             TrafficLight lightToObey = null;
             

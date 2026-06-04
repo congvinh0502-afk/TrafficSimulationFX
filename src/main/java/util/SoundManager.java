@@ -49,6 +49,9 @@ public class SoundManager {
         // Sounds will restart automatically on next update() call
     }
 
+    public static void stopAmbulance() { if (ambulance != null) ambulance.stop(); }
+    public static void stopFiretruck()  { if (firetruck  != null) firetruck.stop(); }
+
     /** Dừng tất cả âm thanh khi chuyển map */
     public static void stopAll() {
         if (ambulance != null) ambulance.stop();

@@ -122,6 +122,9 @@ public class CityMap {
         addBidirectional(nc, center); addBidirectional(center, sc);
         addBidirectional(ne, ec); addBidirectional(ec, se);
 
+        // --- CÁNH TÂY BẮC CỦA NGÃ 5 TRUNG TÂM ---
+        addSpawnRoad(cx - 750, cy - 750, center); // Spawn chéo TâyBắc → ngã 5
+
         // --- 12 SPAWN NODE NGOÀI RÌA ---
         // Cạnh Bắc (3 spawn)
         addSpawnRoad(cx-sp, cy-sp-400, nw);

@@ -117,7 +117,7 @@ public class SimulationEngine extends AnimationTimer {
         if (!config.Constants.AUTO_LIGHTS) {
             for (IntersectionNode node : cityMap.getNodes()) {
                 if (node.getType() != IntersectionNode.NodeType.FIVE_WAY) {
-                    if (Math.abs(node.getX() - worldX) < 50 && Math.abs(node.getY() - worldY) < 50) {
+                    if (Math.abs(node.getX() - worldX) < 100 && Math.abs(node.getY() - worldY) < 100) {
                         node.manualToggle(); 
                         return; 
                     }
@@ -187,8 +187,12 @@ public class SimulationEngine extends AnimationTimer {
             v.update(vehicles); 
         }
 
-        // 6. Dọn dẹp xe đi quá xa khỏi map
-        vehicles.removeIf(v -> v.getX() < -1500 || v.getX() > 5000 || v.getY() < -1500 || v.getY() > 5000);
+        // 6. Dọn dẹp xe ra khỏi vùng bản đồ + dừng âm thanh ngay khi xe cuối cùng biến mất
+        boolean hadAmbulance = vehicles.stream().anyMatch(v -> v instanceof model.vehicle.EmergencyVehicle);
+        boolean hadFiretruck  = vehicles.stream().anyMatch(v -> v instanceof model.vehicle.FireTruck);
+        vehicles.removeIf(v -> v.getX() < -600 || v.getX() > 2000 || v.getY() < -700 || v.getY() > 1700);
+        if (hadAmbulance && vehicles.stream().noneMatch(v -> v instanceof model.vehicle.EmergencyVehicle)) util.SoundManager.stopAmbulance();
+        if (hadFiretruck  && vehicles.stream().noneMatch(v -> v instanceof model.vehicle.FireTruck))        util.SoundManager.stopFiretruck();
 
         // 7. Flycam bám theo xe; nếu xe bị xóa → reset camera về tâm
         if (lockedVehicle != null) {
@@ -283,15 +287,37 @@ public class SimulationEngine extends AnimationTimer {
             
             if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
                 // --- ĐỒ HỌA BÙNG BINH (NGÃ 5) ---
-                double radius = 40; 
-                // Vạch đi bộ quanh bùng binh (Nét đứt vòng tròn)
-                gc.setStroke(Color.WHITE); gc.setLineWidth(5); gc.setLineDashes(4, 8);
-                gc.strokeOval(nX - radius - 15, nY - radius - 15, (radius + 15) * 2, (radius + 15) * 2);
-                gc.setLineDashes(null);
-                
+                double radius = 40;
+                double s45 = Math.sqrt(2.0) / 2; // cos/sin 45°
+
                 // Đảo cỏ xanh ở giữa
                 gc.setFill(Color.web("#2ecc71")); gc.fillOval(nX - radius, nY - radius, radius * 2, radius * 2);
                 gc.setStroke(Color.WHITE); gc.setLineWidth(2); gc.strokeOval(nX - radius, nY - radius, radius * 2, radius * 2);
+
+                // Vòng tròn vạch đi bộ quanh bùng binh
+                gc.setStroke(Color.WHITE); gc.setLineWidth(5); gc.setLineDashes(4, 8);
+                gc.strokeOval(nX - halfW, nY - halfW, halfW * 2, halfW * 2);
+                gc.setLineDashes(null);
+
+                // Vạch dừng cho 4 hướng cardinal (offset +15)
+                gc.setStroke(Color.WHITE); gc.setLineWidth(3);
+                gc.strokeLine(nX - halfW, nY - halfW - 15, nX,        nY - halfW - 15); // Bắc
+                gc.strokeLine(nX,        nY + halfW + 15, nX + halfW, nY + halfW + 15); // Nam
+                gc.strokeLine(nX - halfW - 15, nY,        nX - halfW - 15, nY + halfW); // Tây
+                gc.strokeLine(nX + halfW + 15, nY - halfW, nX + halfW + 15, nY);        // Đông
+                // Vạch dừng cánh TâyBắc (chéo 225°, chỉ làn phải)
+                gc.strokeLine(nX - (halfW+15)*s45, nY - (halfW+15)*s45,
+                              nX - 15*s45,         nY - (2*halfW+15)*s45);
+
+                // Vạch đi bộ cho 4 hướng cardinal (zebra dashes, offset +5)
+                gc.setStroke(Color.WHITE); gc.setLineWidth(6); gc.setLineDashes(4, 6);
+                gc.strokeLine(nX - halfW + 5, nY - halfW - 5, nX + halfW - 5, nY - halfW - 5); // Bắc
+                gc.strokeLine(nX - halfW + 5, nY + halfW + 5, nX + halfW - 5, nY + halfW + 5); // Nam
+                gc.strokeLine(nX - halfW - 5, nY - halfW + 5, nX - halfW - 5, nY + halfW - 5); // Tây
+                gc.strokeLine(nX + halfW + 5, nY - halfW + 5, nX + halfW + 5, nY + halfW - 5); // Đông
+                // Vạch đi bộ cánh TâyBắc (chéo 135°, full width)
+                gc.strokeLine(nX - 2*halfW*s45, nY - 10*s45, nX - 10*s45, nY - 2*halfW*s45);
+                gc.setLineDashes(null);
             } else {
                 // --- ĐỒ HỌA NGÃ 3, NGÃ 4 (THÔNG MINH theo hướng đường) ---
                 boolean hasNorth = false, hasSouth = false, hasWest = false, hasEast = false;
@@ -305,31 +331,20 @@ public class SimulationEngine extends AnimationTimer {
                     }
                 }
 
-                // a. Vạch kẻ đường đi bộ (Zebra Crossing) - chỉ vẽ ở nơi có đường
-                gc.setStroke(Color.WHITE);
-                gc.setLineWidth(6);
-                gc.setLineDashes(4, 6);
-                if (hasNorth || hasSouth) {
-                    gc.strokeLine(nX - halfW + 5, nY - halfW - 15, nX + halfW - 5, nY - halfW - 15);
-                    gc.strokeLine(nX - halfW + 5, nY + halfW + 15, nX + halfW - 5, nY + halfW + 15);
-                }
-                if (hasWest || hasEast) {
-                    gc.strokeLine(nX - halfW - 15, nY - halfW + 5, nX - halfW - 15, nY + halfW - 5);
-                    gc.strokeLine(nX + halfW + 15, nY - halfW + 5, nX + halfW + 15, nY + halfW - 5);
-                }
+                // a. Vạch đi bộ (Zebra Crossing) – mỗi hướng độc lập, offset +5 (gần ngã tư)
+                gc.setStroke(Color.WHITE); gc.setLineWidth(6); gc.setLineDashes(4, 6);
+                if (hasNorth) gc.strokeLine(nX - halfW + 5, nY - halfW - 5, nX + halfW - 5, nY - halfW - 5);
+                if (hasSouth) gc.strokeLine(nX - halfW + 5, nY + halfW + 5, nX + halfW - 5, nY + halfW + 5);
+                if (hasWest)  gc.strokeLine(nX - halfW - 5, nY - halfW + 5, nX - halfW - 5, nY + halfW - 5);
+                if (hasEast)  gc.strokeLine(nX + halfW + 5, nY - halfW + 5, nX + halfW + 5, nY + halfW - 5);
                 gc.setLineDashes(null);
 
-                // b. Vạch dừng chờ đèn đỏ - bên tay PHẢI của từng chiều xe chạy
-                // Xe đi Nam (xuống): làn phải = Tây (x < nX)
-                // Xe đi Bắc (lên):  làn phải = Đông (x > nX)
-                // Xe đi Tây:        làn phải = Bắc (y < nY)
-                // Xe đi Đông:       làn phải = Nam (y > nY)
-                gc.setStroke(Color.WHITE);
-                gc.setLineWidth(3);
-                if (hasNorth) gc.strokeLine(nX - halfW, nY - halfW - 5, nX, nY - halfW - 5); // Tây nửa → xe đi Nam
-                if (hasSouth) gc.strokeLine(nX, nY + halfW + 5, nX + halfW, nY + halfW + 5); // Đông nửa → xe đi Bắc
-                if (hasWest)  gc.strokeLine(nX - halfW - 5, nY, nX - halfW - 5, nY + halfW); // Nam nửa → xe đi Đông
-                if (hasEast)  gc.strokeLine(nX + halfW + 5, nY - halfW, nX + halfW + 5, nY); // Bắc nửa → xe đi Tây
+                // b. Vạch dừng – offset +15 (xa ngã tư hơn, xe dừng trước rồi mới đến vạch đi bộ)
+                gc.setStroke(Color.WHITE); gc.setLineWidth(3);
+                if (hasNorth) gc.strokeLine(nX - halfW, nY - halfW - 15, nX,        nY - halfW - 15);
+                if (hasSouth) gc.strokeLine(nX,        nY + halfW + 15, nX + halfW, nY + halfW + 15);
+                if (hasWest)  gc.strokeLine(nX - halfW - 15, nY,        nX - halfW - 15, nY + halfW);
+                if (hasEast)  gc.strokeLine(nX + halfW + 15, nY - halfW, nX + halfW + 15, nY);
 
                 // c. Vạch dẫn hướng ôm cua (Guide Arcs) - vàng mờ
                 gc.setStroke(Color.rgb(241, 196, 15, 0.4));
@@ -440,7 +455,11 @@ public class SimulationEngine extends AnimationTimer {
         gc.setLineDashes(null); 
     }
     public javafx.scene.canvas.Canvas getCanvas() { return canvas; }
-    public void clearAllVehicles() { vehicles.clear(); }
+    public void clearAllVehicles() {
+        vehicles.clear();
+        util.SoundManager.stopAmbulance();
+        util.SoundManager.stopFiretruck();
+    }
     public void resetCamera() { 
             zoomScale = 1.0; 
             if (!cityMap.getNodes().isEmpty()) {
