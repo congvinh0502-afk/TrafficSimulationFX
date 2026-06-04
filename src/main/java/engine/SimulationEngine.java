@@ -196,9 +196,24 @@ public class SimulationEngine extends AnimationTimer {
     }
 
     private Color getColorForPhase(TrafficLight.Phase phase) {
-        if (phase == TrafficLight.Phase.RED) return Color.RED;
+        if (phase == TrafficLight.Phase.RED)    return Color.RED;
         if (phase == TrafficLight.Phase.YELLOW) return Color.YELLOW;
         return Color.LIMEGREEN;
+    }
+
+    /** Vẽ trụ đèn giao thông tại (x, y) gồm hộp đen + 1 đèn màu */
+    private void drawTrafficLight(GraphicsContext gc, TrafficLight light, double x, double y) {
+        // Hộp đèn màu đen
+        gc.setFill(Color.web("#2c3e50"));
+        gc.fillRoundRect(x, y, 16, 22, 4, 4);
+        // Đèn màu bên trong
+        gc.setFill(getColorForPhase(light.getPhase()));
+        gc.fillOval(x + 3, y + 3, 10, 10);
+        // Halo nhỏ khi xanh
+        if (light.getPhase() == TrafficLight.Phase.GREEN) {
+            gc.setFill(Color.LIMEGREEN.deriveColor(0, 1, 1, 0.25));
+            gc.fillOval(x - 2, y - 2, 20, 20);
+        }
     }
 
     private void render() {
@@ -339,26 +354,35 @@ public class SimulationEngine extends AnimationTimer {
             VehicleRenderer.drawLights(gc, v, darkness);
         }
 
-        // TẦNG 5: VẼ ĐÈN GIAO THÔNG (Có số đếm)
+        // TẦNG 5: VẼ ĐÈN GIAO THÔNG (chỉ vẽ ở hướng có đường)
         for (IntersectionNode node : cityMap.getNodes()) {
-            if (node.getType() != IntersectionNode.NodeType.FIVE_WAY) {
-                double nX = node.getX(); double nY = node.getY(); double offset = Constants.ROAD_WIDTH / 2 + 5; 
-                gc.setFill(getColorForPhase(node.getLightNorth().getPhase())); gc.fillOval(nX - 45, nY - offset - 20, 20, 20); 
-                gc.setFill(getColorForPhase(node.getLightSouth().getPhase())); gc.fillOval(nX + 25, nY + offset, 20, 20);
-                gc.setFill(getColorForPhase(node.getLightEast().getPhase())); gc.fillOval(nX + offset, nY - 45, 20, 20);
-                gc.setFill(getColorForPhase(node.getLightWest().getPhase())); gc.fillOval(nX - offset - 20, nY + 25, 20, 20);
+            if (node.isSpawnNode()) continue;
+            double nX = node.getX(), nY = node.getY();
+            double off = Constants.ROAD_WIDTH / 2 + 8; // khoảng cách từ tâm đến trụ đèn
 
-                // Đồng hồ đếm lùi
-                int remain = (int) Math.ceil(node.getRemainingTime());
-                boolean showText = false;
-                if (node.getLightMode() == IntersectionNode.LightMode.COUNTDOWN) showText = true;
-                else if (node.getLightMode() == IntersectionNode.LightMode.SMART_COUNTDOWN && remain <= 10) showText = true;
+            if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
+                // 5 đèn: N, S, E, W + NW diagonal
+                drawTrafficLight(gc, node.getLightNorth(), nX,        nY - off - 10);
+                drawTrafficLight(gc, node.getLightSouth(), nX,        nY + off);
+                drawTrafficLight(gc, node.getLightEast(),  nX + off,  nY);
+                drawTrafficLight(gc, node.getLightWest(),  nX - off - 20, nY);
+                drawTrafficLight(gc, node.getLightNW(),    nX - off,  nY - off);
+            } else {
+                // Chỉ vẽ đèn ở hướng có đường thực sự
+                if (node.isHasNorth()) drawTrafficLight(gc, node.getLightNorth(), nX - 12, nY - off - 10);
+                if (node.isHasSouth()) drawTrafficLight(gc, node.getLightSouth(), nX + 12, nY + off);
+                if (node.isHasEast())  drawTrafficLight(gc, node.getLightEast(),  nX + off, nY - 12);
+                if (node.isHasWest())  drawTrafficLight(gc, node.getLightWest(),  nX - off - 20, nY + 12);
+            }
 
-                if (showText) {
-                    gc.setFill(Color.WHITE);
-                    gc.setFont(javafx.scene.text.Font.font("Arial", javafx.scene.text.FontWeight.BOLD, 18));
-                    gc.fillText(String.valueOf(remain), nX - 10, nY + 6);
-                }
+            // Đồng hồ đếm ngược (hiển thị ở tâm ngã tư)
+            int remain = (int) Math.ceil(node.getRemainingTime());
+            boolean showText = node.getLightMode() == IntersectionNode.LightMode.COUNTDOWN
+                    || (node.getLightMode() == IntersectionNode.LightMode.SMART_COUNTDOWN && remain <= 10);
+            if (showText) {
+                gc.setFill(Color.WHITE);
+                gc.setFont(javafx.scene.text.Font.font("Arial", javafx.scene.text.FontWeight.BOLD, 16));
+                gc.fillText(String.valueOf(remain), nX - 8, nY + 6);
             }
         }
 

@@ -59,34 +59,63 @@ public class MovementSystem {
         TurnType turn = validTurns.get(random.nextInt(validTurns.size()));
 
         // BƯỚC D: Tính 3 điểm Bezier
-        double cx = node.getX();
-        double cy = node.getY();
-        double offset = v.getLaneOffset(); 
-        double bound = 80;  
+        double cx     = node.getX();
+        double cy     = node.getY();
+        double offset = v.getLaneOffset();
+        double bound  = 85;
+
+        // Bán kính vòng xuyến (phải lớn hơn đảo cỏ = 40px)
+        double R = 55;
 
         double p0x = v.getX(), p0y = v.getY();
-        double p1x = cx, p1y = cy, p2x = cx, p2y = cy;
+        double p1x = cx,       p1y = cy;
+        double p2x = cx,       p2y = cy;
 
-        switch (currentDir) {
-            case 0: // ĐÔNG
-                if (turn == TurnType.RIGHT) { p1x = cx - offset; p1y = cy + offset; p2x = cx - offset; p2y = cy + bound; } 
-                else if (turn == TurnType.LEFT) { p1x = cx + offset; p1y = cy + offset; p2x = cx + offset; p2y = cy - bound; } 
-                else { p1x = cx; p1y = cy + offset; p2x = cx + bound; p2y = cy + offset; } break;
-            case 1: // NAM
-                if (turn == TurnType.RIGHT) { p1x = cx - offset; p1y = cy - offset; p2x = cx - bound; p2y = cy - offset; } 
-                else if (turn == TurnType.LEFT) { p1x = cx - offset; p1y = cy + offset; p2x = cx + bound; p2y = cy + offset; } 
-                else { p1x = cx - offset; p1y = cy; p2x = cx - offset; p2y = cy + bound; } break;
-            case 2: // TÂY
-                if (turn == TurnType.RIGHT) { p1x = cx + offset; p1y = cy - offset; p2x = cx + offset; p2y = cy - bound; } 
-                else if (turn == TurnType.LEFT) { p1x = cx - offset; p1y = cy - offset; p2x = cx - offset; p2y = cy + bound; } 
-                else { p1x = cx; p1y = cy - offset; p2x = cx - bound; p2y = cy - offset; } break;
-            case 3: // BẮC
-                if (turn == TurnType.RIGHT) { p1x = cx + offset; p1y = cy + offset; p2x = cx + bound; p2y = cy + offset; } 
-                else if (turn == TurnType.LEFT) { p1x = cx + offset; p1y = cy - offset; p2x = cx - bound; p2y = cy - offset; } 
-                else { p1x = cx + offset; p1y = cy; p2x = cx + offset; p2y = cy - bound; } break;
+        boolean isRoundabout = node.getType() == model.map.IntersectionNode.NodeType.FIVE_WAY;
+
+        if (isRoundabout) {
+            // Xe PHẢI ôm vòng xuyến: điểm control P1 nằm NGOÀI đảo cỏ (R=55)
+            // Quy tắc giao thông VN: xe đi ngược chiều kim đồng hồ quanh đảo
+            switch (currentDir) {
+                case 0: // Từ Đông sang → đi qua mặt Nam đảo
+                    if (turn == TurnType.RIGHT) { p1x = cx + R; p1y = cy + R; p2x = cx + offset; p2y = cy + bound; }
+                    else if (turn == TurnType.LEFT) { p1x = cx + R; p1y = cy + R; p2x = cx - offset; p2y = cy - bound; }
+                    else { p1x = cx;    p1y = cy + R;      p2x = cx + bound; p2y = cy + offset; } break;
+                case 1: // Từ Nam xuống → đi qua mặt Tây đảo
+                    if (turn == TurnType.RIGHT) { p1x = cx - R; p1y = cy + R; p2x = cx - bound; p2y = cy + offset; }
+                    else if (turn == TurnType.LEFT) { p1x = cx - R; p1y = cy + R; p2x = cx + bound; p2y = cy + offset; }
+                    else { p1x = cx - R;   p1y = cy;          p2x = cx - offset; p2y = cy + bound; } break;
+                case 2: // Từ Tây sang → đi qua mặt Bắc đảo
+                    if (turn == TurnType.RIGHT) { p1x = cx - R; p1y = cy - R; p2x = cx - offset; p2y = cy - bound; }
+                    else if (turn == TurnType.LEFT) { p1x = cx - R; p1y = cy - R; p2x = cx + offset; p2y = cy + bound; }
+                    else { p1x = cx;    p1y = cy - R;      p2x = cx - bound; p2y = cy - offset; } break;
+                case 3: // Từ Bắc xuống → đi qua mặt Đông đảo
+                    if (turn == TurnType.RIGHT) { p1x = cx + R; p1y = cy - R; p2x = cx + bound; p2y = cy - offset; }
+                    else if (turn == TurnType.LEFT) { p1x = cx + R; p1y = cy - R; p2x = cx - bound; p2y = cy - offset; }
+                    else { p1x = cx + R;   p1y = cy;          p2x = cx + offset; p2y = cy - bound; } break;
+            }
+        } else {
+            // Ngã thường: Bezier qua tâm ngã tư
+            switch (currentDir) {
+                case 0: // ĐÔNG
+                    if (turn == TurnType.RIGHT) { p1x = cx - offset; p1y = cy + offset; p2x = cx - offset; p2y = cy + bound; }
+                    else if (turn == TurnType.LEFT) { p1x = cx + offset; p1y = cy + offset; p2x = cx + offset; p2y = cy - bound; }
+                    else { p1x = cx; p1y = cy + offset; p2x = cx + bound; p2y = cy + offset; } break;
+                case 1: // NAM
+                    if (turn == TurnType.RIGHT) { p1x = cx - offset; p1y = cy - offset; p2x = cx - bound; p2y = cy - offset; }
+                    else if (turn == TurnType.LEFT) { p1x = cx - offset; p1y = cy + offset; p2x = cx + bound; p2y = cy + offset; }
+                    else { p1x = cx - offset; p1y = cy; p2x = cx - offset; p2y = cy + bound; } break;
+                case 2: // TÂY
+                    if (turn == TurnType.RIGHT) { p1x = cx + offset; p1y = cy - offset; p2x = cx + offset; p2y = cy - bound; }
+                    else if (turn == TurnType.LEFT) { p1x = cx - offset; p1y = cy - offset; p2x = cx - offset; p2y = cy + bound; }
+                    else { p1x = cx; p1y = cy - offset; p2x = cx - bound; p2y = cy - offset; } break;
+                case 3: // BẮC
+                    if (turn == TurnType.RIGHT) { p1x = cx + offset; p1y = cy + offset; p2x = cx + bound; p2y = cy + offset; }
+                    else if (turn == TurnType.LEFT) { p1x = cx + offset; p1y = cy - offset; p2x = cx - bound; p2y = cy - offset; }
+                    else { p1x = cx + offset; p1y = cy; p2x = cx + offset; p2y = cy - bound; } break;
+            }
         }
 
-        // Truyền thông số cong Bezier cho Xe, để Xe tự chạy
         v.setBezierPoints(p0x, p0y, p1x, p1y, p2x, p2y);
         v.setTurning(true);
         v.setBezierT(0);

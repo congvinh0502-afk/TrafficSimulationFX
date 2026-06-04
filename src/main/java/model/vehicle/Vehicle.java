@@ -45,14 +45,10 @@ public abstract class Vehicle {
             return;
         }
 
-        // 1. ĐANG BỊ ÉP NHƯỜNG ĐƯỜNG (Dạt sang 1 bên và giảm tốc)
+        // 1. ĐANG NHƯỜNG ĐƯỜNG xe ưu tiên (chỉ giảm tốc, không dạt ngang để tránh ra cỏ)
         if (yieldTimer > 0 && !isTurning) {
             yieldTimer--;
-            double swerveDirection = (laneOffset >= 30) ? 90 : -90;
-            double swerveRad = Math.toRadians(angle + swerveDirection);
-            this.x += Math.cos(swerveRad) * 0.4;
-            this.y += Math.sin(swerveRad) * 0.4;
-            this.speed = Math.max(0, this.speed - 0.15); // Phanh từ từ
+            this.speed = Math.max(0, this.speed - 0.12);
         }
         // 2. ĐANG RẼ TẠI NGÃ TƯ (Chạy theo đường cong Bezier)
         else if (isTurning) {

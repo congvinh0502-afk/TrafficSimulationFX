@@ -13,12 +13,11 @@ public class CityMap {
         nodes.clear();
         roads.clear();
 
-        if (mapType.equals("Ngã Ba")   || mapType.equals("Ngã 3"))         { buildThreeWay();    return; }
-        if (mapType.equals("Ngã Tư")   || mapType.equals("Ngã 4"))         { buildFourWay();     return; }
-        if (mapType.equals("Ngã Năm")  || mapType.equals("Bùng binh"))     { buildRoundabout();  return; }
-        if (mapType.equals("Mạng lưới")|| mapType.equals("Mạng lưới rộng")){ buildDefaultCity(); return; }
-
-        buildDefaultCity(); // fallback
+        if (mapType.equals("Ngã Ba")   || mapType.equals("Ngã 3"))         { buildThreeWay();    }
+        else if (mapType.equals("Ngã Tư")   || mapType.equals("Ngã 4"))  { buildFourWay();     }
+        else if (mapType.equals("Ngã Năm")  || mapType.equals("Bùng binh")) { buildRoundabout(); }
+        else { buildDefaultCity(); }
+        finalizeConnections(); // Scan roads → set connected directions for each node
     }
 
     // ============================================================
@@ -93,16 +92,19 @@ public class CityMap {
         double cx = 640, cy = 400;
         double sp = 300; // spacing giữa các ngã tư
 
-        // --- 9 NÚT GIAO CHÍNH ---
-        IntersectionNode nw = new IntersectionNode("NW", cx-sp, cy-sp, IntersectionNode.NodeType.FOUR_WAY);
+        // --- 9 NÚT GIAO CHÍNH (đa dạng loại ngã) ---
+        // Góc: Ngã 3 (chỉ có 3 hướng vì là góc lưới)
+        IntersectionNode nw = new IntersectionNode("NW", cx-sp, cy-sp, IntersectionNode.NodeType.THREE_WAY);
+        IntersectionNode ne = new IntersectionNode("NE", cx+sp, cy-sp, IntersectionNode.NodeType.THREE_WAY);
+        IntersectionNode sw = new IntersectionNode("SW", cx-sp, cy+sp, IntersectionNode.NodeType.THREE_WAY);
+        IntersectionNode se = new IntersectionNode("SE", cx+sp, cy+sp, IntersectionNode.NodeType.THREE_WAY);
+        // Cạnh giữa: Ngã 4 (4 hướng)
         IntersectionNode nc = new IntersectionNode("N",  cx,    cy-sp, IntersectionNode.NodeType.FOUR_WAY);
-        IntersectionNode ne = new IntersectionNode("NE", cx+sp, cy-sp, IntersectionNode.NodeType.FOUR_WAY);
         IntersectionNode wc = new IntersectionNode("W",  cx-sp, cy,    IntersectionNode.NodeType.FOUR_WAY);
-        IntersectionNode center = new IntersectionNode("C", cx, cy,    IntersectionNode.NodeType.FIVE_WAY); // Bùng binh trung tâm
         IntersectionNode ec = new IntersectionNode("E",  cx+sp, cy,    IntersectionNode.NodeType.FOUR_WAY);
-        IntersectionNode sw = new IntersectionNode("SW", cx-sp, cy+sp, IntersectionNode.NodeType.FOUR_WAY);
         IntersectionNode sc = new IntersectionNode("S",  cx,    cy+sp, IntersectionNode.NodeType.FOUR_WAY);
-        IntersectionNode se = new IntersectionNode("SE", cx+sp, cy+sp, IntersectionNode.NodeType.FOUR_WAY);
+        // Trung tâm: Ngã 5 – Bùng binh
+        IntersectionNode center = new IntersectionNode("C", cx, cy,    IntersectionNode.NodeType.FIVE_WAY);
 
         // Center node đầu tiên để camera focus vào giữa
         nodes.add(center);
@@ -152,6 +154,41 @@ public class CityMap {
         IntersectionNode spawn = new IntersectionNode("SPAWN", spawnX, spawnY,
                 IntersectionNode.NodeType.THREE_WAY, true);
         roads.add(new RoadEdge(spawn, to, RoadEdge.RoadType.AVENUE));
+    }
+
+    /**
+     * Scan toàn bộ đường để xác định hướng kết nối thực sự của từng node.
+     * Gọi sau khi build map xong để IntersectionNode biết bật đèn đúng hướng.
+     */
+    private void finalizeConnections() {
+        for (IntersectionNode node : nodes) {
+            if (node.isSpawnNode()) continue;
+            boolean hasN = false, hasS = false, hasE = false, hasW = false, hasNW = false;
+
+            for (RoadEdge road : roads) {
+                IntersectionNode nb = null;
+                if (road.getStartNode() == node) nb = road.getEndNode();
+                else if (road.getEndNode() == node) nb = road.getStartNode();
+                if (nb == null) continue;
+
+                double dx = nb.getX() - node.getX();
+                double dy = nb.getY() - node.getY();
+                if (Math.hypot(dx, dy) < 1) continue;
+
+                double a = Math.toDegrees(Math.atan2(dy, dx));
+                if (a < 0) a += 360;
+
+                if      (a >= 337.5 || a <  22.5) hasE  = true;
+                else if (a >=  67.5 && a < 112.5) hasS  = true;
+                else if (a >= 157.5 && a < 202.5) hasW  = true;
+                else if (a >= 202.5 && a < 247.5) { hasNW = true; hasW = true; }
+                else if (a >= 247.5 && a < 292.5) hasN  = true;
+                else if (a >=  22.5 && a <  67.5) { hasE = true; hasS = true; }
+                else if (a >= 112.5 && a < 157.5) { hasS = true; hasW = true; }
+                else                               { hasN = true; hasE = true; }
+            }
+            node.setConnectedDirections(hasN, hasS, hasE, hasW, hasNW);
+        }
     }
 
     public List<IntersectionNode> getNodes() { return nodes; }
