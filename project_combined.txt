@@ -1,0 +1,2476 @@
+﻿
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\app\Main.java =====
+
+package app;
+
+import config.Constants;
+import javafx.application.Application;
+import javafx.scene.Scene;
+import javafx.stage.Stage;
+import view.MainView;
+
+public class Main extends Application {
+    
+    @Override
+    public void start(Stage primaryStage) {
+        MainView mainView = new MainView();
+        Scene scene = new Scene(mainView.getRoot(), Constants.WINDOW_WIDTH, Constants.WINDOW_HEIGHT);
+        
+        primaryStage.setTitle("Smart Urban Traffic Simulation (JavaFX Engine)");
+        primaryStage.setScene(scene);
+        primaryStage.setResizable(false);
+        primaryStage.show();
+        
+        // Bắt đầu vòng lặp game
+        mainView.startSimulation();
+    }
+
+    public static void main(String[] args) {
+        launch(args);
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\config\Constants.java =====
+
+package config;
+
+public class Constants {
+    // Kích thước cửa sổ
+    public static final double WINDOW_WIDTH = 1280;
+    public static final double WINDOW_HEIGHT = 800;
+    
+    // Cấu hình đường sá
+    public static final double LANE_WIDTH = 30;
+    public static final double ROAD_WIDTH = LANE_WIDTH * 4; // 120px tổng
+
+    // Tốc độ cơ sở (px/frame) cho từng loại xe – nhỏ hơn để mô phỏng thực tế hơn
+    public static final double BASE_CAR       = 2.2;
+    public static final double BASE_MOTORBIKE = 2.6;
+    public static final double BASE_BICYCLE   = 0.9;
+    public static final double BASE_AMBULANCE = 3.5;
+    public static final double BASE_FIRETRUCK = 3.2;
+    // THÊM CÔNG TẮC THỜI TIẾT
+    public static boolean IS_RAINING = false;
+    // ---> THÊM DÒNG NÀY: Công tắc bật tắt đèn giao thông tự động
+    public static boolean AUTO_LIGHTS = true;
+    // ---> BƯỚC 20: HỆ SỐ TỐC ĐỘ TỪNG LOẠI XE (Mặc định x1.0)
+    public static double SPEED_CAR = 1.0;
+    public static double SPEED_MOTORBIKE = 1.0;
+    public static double SPEED_BICYCLE = 1.0;
+    public static double SPEED_AMBULANCE = 1.0;
+    public static double SPEED_FIRETRUCK = 1.0;
+    // ---> BƯỚC 21: CẤU HÌNH THỜI GIAN VÀ ĐÈN
+    public static int TIME_MODE = 0; // 0: Chu kỳ tự động, 1: Luôn Ban Ngày, 2: Luôn Ban Đêm
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\engine\SimulationEngine.java =====
+
+package engine;
+
+import config.Constants;
+import javafx.animation.AnimationTimer;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+import javafx.scene.shape.StrokeLineCap;
+import model.map.CityMap;
+import model.map.IntersectionNode;
+import model.map.RoadEdge;
+import java.util.ArrayList;
+import java.util.List;
+import model.traffic.TrafficLight;
+import model.vehicle.Vehicle;
+import system.MovementSystem;
+import system.SpawnSystem;
+import system.CollisionSystem;
+import system.TrafficRuleSystem;
+import view.VehicleRenderer;
+
+public class SimulationEngine extends AnimationTimer {
+    
+    private Canvas canvas;
+    private GraphicsContext gc;
+    private CityMap cityMap;
+    
+    // --- CAMERA & VIEW ---
+    private double cameraX = 0;
+    private double cameraY = 0;
+    private double zoomScale = 1.0;
+    private Vehicle lockedVehicle = null; 
+
+    // --- SYSTEMS ---
+    private List<Vehicle> vehicles = new ArrayList<>();
+    private SpawnSystem spawnSystem = new SpawnSystem();
+    private MovementSystem movementSystem = new MovementSystem();
+    private CollisionSystem collisionSystem = new CollisionSystem();
+    private TrafficRuleSystem trafficRuleSystem = new TrafficRuleSystem(); 
+
+    // --- ENVIRONMENT ---
+    private boolean isPaused = false;
+    private boolean isDebugMode = false;
+    private double timeOfDay = 12.0; 
+    private double[] rainX = new double[300];
+    private double[] rainY = new double[300];
+   
+
+    public SimulationEngine(Canvas canvas) {
+        this.canvas = canvas;
+        this.gc = canvas.getGraphicsContext2D();
+        this.cityMap = new CityMap(); 
+        
+        // Khởi tạo hạt mưa
+        for (int i = 0; i < 300; i++) {
+            rainX[i] = Math.random() * Constants.WINDOW_WIDTH;
+            rainY[i] = Math.random() * Constants.WINDOW_HEIGHT;
+        }
+
+        // ---> QUAN TRỌNG: Gọi hàm đổi Map ngay lúc bật app để Camera nhảy đúng vào giữa đường!
+        changeMap("Mạng lưới");
+    }
+
+    // --- CÁC HÀM GETTER/SETTER CHO GIAO DIỆN ---
+    public void togglePause() {
+        this.isPaused = !this.isPaused;
+        if (this.isPaused) util.SoundManager.pauseAll();
+        else               util.SoundManager.resumeAll();
+    }
+    public void setDebugMode(boolean debug) { this.isDebugMode = debug; }
+    public SpawnSystem getSpawnSystem() { return spawnSystem; }
+    public double getZoomScale() { return zoomScale; }
+
+    /** Chế độ cảnh sát: đèn tất cả đỏ, sau đó cho từng hướng xanh lần lượt */
+    public void togglePoliceMode() {
+        config.Constants.AUTO_LIGHTS = false;
+        for (model.map.IntersectionNode node : cityMap.getNodes()) {
+            node.manualToggle();
+        }
+    }
+    
+    public void zoomCamera(double factor) {
+        this.zoomScale *= factor;
+        if(this.zoomScale < 0.3) this.zoomScale = 0.3; 
+        if(this.zoomScale > 3.0) this.zoomScale = 3.0; 
+    }
+    
+    public void moveCamera(double dx, double dy) {
+        this.cameraX -= dx;
+        this.cameraY -= dy;
+    }
+    public void unlockCamera() { this.lockedVehicle = null; }
+
+    // --- HÀM ĐỔI BẢN ĐỒ VÀ CĂN GIỮA CAMERA ---
+    public void changeMap(String mapType) {
+        vehicles.clear();
+        util.SoundManager.stopAll();
+        spawnSystem.resetTimer();
+        cityMap.loadMap(mapType);
+        zoomScale = 1.0;
+        unlockCamera();           
+        
+        // Thuật toán: Tìm Ngã tư đầu tiên (Ngã tư trung tâm) để chĩa Camera vào
+        if (!cityMap.getNodes().isEmpty()) {
+            IntersectionNode centerNode = cityMap.getNodes().get(0);
+            cameraX = centerNode.getX() - (canvas.getWidth() / 2);
+            cameraY = centerNode.getY() - (canvas.getHeight() / 2);
+        }
+    }
+
+    // --- XỬ LÝ CLICK CHUỘT TƯƠNG TÁC ---
+    public void handleMouseClick(double mouseX, double mouseY, boolean isRightClick) {
+        double worldX = (mouseX - canvas.getWidth()/2) / zoomScale + canvas.getWidth()/2 + cameraX;
+        double worldY = (mouseY - canvas.getHeight()/2) / zoomScale + canvas.getHeight()/2 + cameraY;
+        
+        // 1. Check click vào Đèn Giao Thông (Đổi màu thủ công)
+        if (!config.Constants.AUTO_LIGHTS) {
+            for (IntersectionNode node : cityMap.getNodes()) {
+                if (node.getType() != IntersectionNode.NodeType.FIVE_WAY) {
+                    if (Math.abs(node.getX() - worldX) < 50 && Math.abs(node.getY() - worldY) < 50) {
+                        node.manualToggle(); 
+                        return; 
+                    }
+                }
+            }
+        }
+
+        // 2. Check click vào Xe (Phá lốp / Flycam bám đuổi)
+        boolean clickedOnCar = false;
+        for (Vehicle v : vehicles) {
+            if (Math.abs(v.getX() - worldX) < 25 && Math.abs(v.getY() - worldY) < 25) {
+                clickedOnCar = true;
+                if (isRightClick) lockedVehicle = v; 
+                else {
+                    v.setBroken(!v.isBroken()); 
+                    lockedVehicle = null; 
+                }
+                break;
+            }
+        }
+        if (isRightClick && !clickedOnCar) lockedVehicle = null;
+    }
+
+    @Override
+    public void handle(long now) {
+        update();
+        render();
+    }
+
+    private void update() {
+        if (isPaused) return; 
+
+        // 1. Logic thời gian 
+        if (config.Constants.TIME_MODE == 0) {
+            timeOfDay += 0.005; 
+            if (timeOfDay >= 24) timeOfDay = 0;
+        } else if (config.Constants.TIME_MODE == 1) {
+            timeOfDay = 12.0; 
+        } else {
+            timeOfDay = 0.0;  
+        }
+
+        // 2. Spawn xe và kiểm tra còi hú
+        spawnSystem.spawnRandom(vehicles, cityMap);
+        
+        boolean hasAmbulance = false;
+        boolean hasFiretruck = false;
+        for (Vehicle v : vehicles) {
+            if (v instanceof model.vehicle.FireTruck) hasFiretruck = true;
+            else if (v instanceof model.vehicle.EmergencyVehicle) hasAmbulance = true;
+        }
+        if (hasFiretruck) util.SoundManager.playFiretruck();
+        if (hasAmbulance) util.SoundManager.playAmbulance();
+        
+        // 3. Cập nhật đèn đỏ
+        for (IntersectionNode node : cityMap.getNodes()) {
+            node.updateLights();
+        }
+        
+        // 4. Các System xử lý tính toán CẤP DỮ LIỆU
+        collisionSystem.update(vehicles);
+        trafficRuleSystem.applyRules(vehicles, cityMap.getNodes());
+        movementSystem.updatePositions(vehicles, cityMap); // Gắn cờ bẻ lái Bezier
+        
+        // 5. CHO TỪNG CHIẾC XE TỰ CHẠY BẰNG BỘ NÃO MỚI CỦA CHÚNG NÓ
+        for (Vehicle v : vehicles) {
+            v.update(vehicles); 
+        }
+
+        // 6. Dọn dẹp xe đi quá xa khỏi map
+        vehicles.removeIf(v -> v.getX() < -1500 || v.getX() > 5000 || v.getY() < -1500 || v.getY() > 5000);
+
+        // 7. Flycam bám theo xe; nếu xe bị xóa → reset camera về tâm
+        if (lockedVehicle != null) {
+            if (!vehicles.contains(lockedVehicle)) {
+                lockedVehicle = null;
+                resetCamera(); // xe đã xóa → camera về trọng tâm
+            } else {
+                cameraX = lockedVehicle.getX() - canvas.getWidth() / 2;
+                cameraY = lockedVehicle.getY() - canvas.getHeight() / 2;
+            }
+        }
+    }
+
+    private Color getColorForPhase(TrafficLight.Phase phase) {
+        if (phase == TrafficLight.Phase.RED)    return Color.RED;
+        if (phase == TrafficLight.Phase.YELLOW) return Color.YELLOW;
+        return Color.LIMEGREEN;
+    }
+
+    /** Vẽ trụ đèn giao thông tại (x, y) gồm hộp đen + 1 đèn màu */
+    private void drawTrafficLight(GraphicsContext gc, TrafficLight light, double x, double y) {
+        // Hộp đèn màu đen
+        gc.setFill(Color.web("#2c3e50"));
+        gc.fillRoundRect(x, y, 16, 22, 4, 4);
+        // Đèn màu bên trong
+        gc.setFill(getColorForPhase(light.getPhase()));
+        gc.fillOval(x + 3, y + 3, 10, 10);
+        // Halo nhỏ khi xanh
+        if (light.getPhase() == TrafficLight.Phase.GREEN) {
+            gc.setFill(Color.LIMEGREEN.deriveColor(0, 1, 1, 0.25));
+            gc.fillOval(x - 2, y - 2, 20, 20);
+        }
+    }
+
+    private void render() {
+        // TẦNG 1: VẼ ĐỊA HÌNH
+        gc.setFill(Color.web("#27ae60")); 
+        gc.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
+        
+        gc.save();
+        // Phóng to / Thu nhỏ xoay quanh tâm màn hình
+        gc.translate(canvas.getWidth()/2, canvas.getHeight()/2);
+        gc.scale(zoomScale, zoomScale);
+        gc.translate(-canvas.getWidth()/2, -canvas.getHeight()/2);
+        gc.translate(-cameraX, -cameraY);
+
+        // 1.1 VẼ ĐƯỜNG NHỰA VÀ VẠCH KẺ LÀN (Đã hỗ trợ phân cấp Đại lộ, Phố, Ngõ)
+        for (RoadEdge road : cityMap.getRoads()) {
+            double sx = road.getStartNode().getX(); double sy = road.getStartNode().getY();
+            double ex = road.getEndNode().getX(); double ey = road.getEndNode().getY();
+            
+            double roadW = road.getWidth(); // Lấy độ rộng linh hoạt từ class RoadEdge
+            
+            // Vẽ nền đường nhựa màu xám
+            gc.setStroke(Color.web("#34495e")); 
+            gc.setLineWidth(roadW); 
+            gc.setLineCap(StrokeLineCap.BUTT); 
+            gc.strokeLine(sx, sy, ex, ey);
+            
+            // Vẽ vạch kẻ đường (Sẽ không vẽ vạch nếu đó là ALLEY - Ngõ hẻm)
+            if (road.getType() != RoadEdge.RoadType.ALLEY) {
+                gc.setStroke(Color.web("#f1c40f")); // Màu vàng
+                gc.setLineWidth(2);
+                
+                if (road.getType() == RoadEdge.RoadType.AVENUE) {
+                    // Cấp Đại lộ (AVENUE): Vẽ vạch đôi liền màu vàng (Tim đường)
+                    gc.setLineDashes(null);
+                    gc.strokeLine(sx + 2, sy + 2, ex + 2, ey + 2);
+                    gc.strokeLine(sx - 2, sy - 2, ex - 2, ey - 2);
+                    
+                    // Vẽ vạch đứt phân làn 4 xe
+                    drawDashedLine(sx, sy, ex, ey, roadW / 4);  
+                    drawDashedLine(sx, sy, ex, ey, -roadW / 4); 
+                } else {
+                    // Cấp Đường phố (STREET): Vẽ 1 vạch đứt màu vàng ở giữa
+                    gc.setLineDashes(15, 15);
+                    gc.strokeLine(sx, sy, ex, ey);
+                    gc.setLineDashes(null);
+                }
+            }
+        
+        }
+
+        // 1.2 VẼ CHI TIẾT NGÃ TƯ (Vạch đi bộ, Vạch dừng, Vạch dẫn hướng)
+        for (IntersectionNode node : cityMap.getNodes()) {
+            double nX = node.getX(); double nY = node.getY();
+            double halfW = Constants.ROAD_WIDTH / 2;
+
+            // Xóa các vạch kẻ đường thô bạo đâm xuyên vào giữa ngã tư
+            gc.setFill(Color.web("#34495e"));
+            gc.fillRect(nX - halfW, nY - halfW, Constants.ROAD_WIDTH, Constants.ROAD_WIDTH);
+            
+            if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
+                // --- ĐỒ HỌA BÙNG BINH (NGÃ 5) ---
+                double radius = 40; 
+                // Vạch đi bộ quanh bùng binh (Nét đứt vòng tròn)
+                gc.setStroke(Color.WHITE); gc.setLineWidth(5); gc.setLineDashes(4, 8);
+                gc.strokeOval(nX - radius - 15, nY - radius - 15, (radius + 15) * 2, (radius + 15) * 2);
+                gc.setLineDashes(null);
+                
+                // Đảo cỏ xanh ở giữa
+                gc.setFill(Color.web("#2ecc71")); gc.fillOval(nX - radius, nY - radius, radius * 2, radius * 2);
+                gc.setStroke(Color.WHITE); gc.setLineWidth(2); gc.strokeOval(nX - radius, nY - radius, radius * 2, radius * 2);
+            } else {
+                // --- ĐỒ HỌA NGÃ 3, NGÃ 4 (THÔNG MINH theo hướng đường) ---
+                boolean hasNorth = false, hasSouth = false, hasWest = false, hasEast = false;
+                for (RoadEdge r : cityMap.getRoads()) {
+                    if (r.getStartNode() == node || r.getEndNode() == node) {
+                        IntersectionNode neighbor = (r.getStartNode() == node) ? r.getEndNode() : r.getStartNode();
+                        if (neighbor.getY() < node.getY() - 10) hasNorth = true;
+                        if (neighbor.getY() > node.getY() + 10) hasSouth = true;
+                        if (neighbor.getX() < node.getX() - 10) hasWest = true;
+                        if (neighbor.getX() > node.getX() + 10) hasEast = true;
+                    }
+                }
+
+                // a. Vạch kẻ đường đi bộ (Zebra Crossing) - chỉ vẽ ở nơi có đường
+                gc.setStroke(Color.WHITE);
+                gc.setLineWidth(6);
+                gc.setLineDashes(4, 6);
+                if (hasNorth || hasSouth) {
+                    gc.strokeLine(nX - halfW + 5, nY - halfW - 15, nX + halfW - 5, nY - halfW - 15);
+                    gc.strokeLine(nX - halfW + 5, nY + halfW + 15, nX + halfW - 5, nY + halfW + 15);
+                }
+                if (hasWest || hasEast) {
+                    gc.strokeLine(nX - halfW - 15, nY - halfW + 5, nX - halfW - 15, nY + halfW - 5);
+                    gc.strokeLine(nX + halfW + 15, nY - halfW + 5, nX + halfW + 15, nY + halfW - 5);
+                }
+                gc.setLineDashes(null);
+
+                // b. Vạch dừng chờ đèn đỏ - bên tay PHẢI của từng chiều xe chạy
+                // Xe đi Nam (xuống): làn phải = Tây (x < nX)
+                // Xe đi Bắc (lên):  làn phải = Đông (x > nX)
+                // Xe đi Tây:        làn phải = Bắc (y < nY)
+                // Xe đi Đông:       làn phải = Nam (y > nY)
+                gc.setStroke(Color.WHITE);
+                gc.setLineWidth(3);
+                if (hasNorth) gc.strokeLine(nX - halfW, nY - halfW - 5, nX, nY - halfW - 5); // Tây nửa → xe đi Nam
+                if (hasSouth) gc.strokeLine(nX, nY + halfW + 5, nX + halfW, nY + halfW + 5); // Đông nửa → xe đi Bắc
+                if (hasWest)  gc.strokeLine(nX - halfW - 5, nY, nX - halfW - 5, nY + halfW); // Nam nửa → xe đi Đông
+                if (hasEast)  gc.strokeLine(nX + halfW + 5, nY - halfW, nX + halfW + 5, nY); // Bắc nửa → xe đi Tây
+
+                // c. Vạch dẫn hướng ôm cua (Guide Arcs) - vàng mờ
+                gc.setStroke(Color.rgb(241, 196, 15, 0.4));
+                gc.setLineWidth(1.5);
+                gc.setLineDashes(5, 10);
+                gc.strokeArc(nX - halfW, nY - halfW, halfW, halfW, 270, 90, javafx.scene.shape.ArcType.OPEN);
+                gc.strokeArc(nX, nY - halfW, halfW, halfW, 180, 90, javafx.scene.shape.ArcType.OPEN);
+                gc.strokeArc(nX - halfW, nY, halfW, halfW, 0, 90, javafx.scene.shape.ArcType.OPEN);
+                gc.strokeArc(nX, nY, halfW, halfW, 90, 90, javafx.scene.shape.ArcType.OPEN);
+                gc.setLineDashes(null);
+            }
+        }
+
+        // TẦNG 2: VẼ THÂN XE 
+        for (Vehicle v : vehicles) {
+            VehicleRenderer.drawCarBody(gc, v);
+        }
+
+        // TẦNG 3: TÍNH TOÁN VÀ PHỦ MÀN ĐÊM (Shading Pass)
+        double darkness = 0;
+        if (timeOfDay >= 18 || timeOfDay <= 6) darkness = 0.75; 
+        else if (timeOfDay > 16 && timeOfDay < 18) darkness = 0.75 * ((timeOfDay - 16) / 2.0); 
+        else if (timeOfDay > 6 && timeOfDay < 8) darkness = 0.75 * (1 - ((timeOfDay - 6) / 2.0)); 
+
+        if (darkness > 0) {
+            gc.setFill(Color.rgb(10, 15, 30, darkness)); 
+            // Tính toán vùng che phủ rộng hơn để không bị lỗi màn đêm khi zoom out
+            gc.fillRect(cameraX - 5000, cameraY - 5000, 15000, 15000);
+        }
+
+        // TẦNG 4: VẼ ĐÈN PHA & ĐÈN HẬU 
+        for (Vehicle v : vehicles) {
+            VehicleRenderer.drawLights(gc, v, darkness);
+        }
+
+        // TẦNG 5: VẼ ĐÈN GIAO THÔNG (chỉ vẽ ở hướng có đường)
+        for (IntersectionNode node : cityMap.getNodes()) {
+            if (node.isSpawnNode()) continue;
+            double nX = node.getX(), nY = node.getY();
+            double off = Constants.ROAD_WIDTH / 2 + 8; // khoảng cách từ tâm đến trụ đèn
+
+            if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
+                // 5 đèn: N, S, E, W + NW diagonal
+                drawTrafficLight(gc, node.getLightNorth(), nX,        nY - off - 10);
+                drawTrafficLight(gc, node.getLightSouth(), nX,        nY + off);
+                drawTrafficLight(gc, node.getLightEast(),  nX + off,  nY);
+                drawTrafficLight(gc, node.getLightWest(),  nX - off - 20, nY);
+                drawTrafficLight(gc, node.getLightNW(),    nX - off,  nY - off);
+            } else {
+                // Chỉ vẽ đèn ở hướng có đường thực sự
+                if (node.isHasNorth()) drawTrafficLight(gc, node.getLightNorth(), nX - 12, nY - off - 10);
+                if (node.isHasSouth()) drawTrafficLight(gc, node.getLightSouth(), nX + 12, nY + off);
+                if (node.isHasEast())  drawTrafficLight(gc, node.getLightEast(),  nX + off, nY - 12);
+                if (node.isHasWest())  drawTrafficLight(gc, node.getLightWest(),  nX - off - 20, nY + 12);
+            }
+
+            // Đồng hồ đếm ngược (hiển thị ở tâm ngã tư)
+            int remain = (int) Math.ceil(node.getRemainingTime());
+            boolean showText = node.getLightMode() == IntersectionNode.LightMode.COUNTDOWN
+                    || (node.getLightMode() == IntersectionNode.LightMode.SMART_COUNTDOWN && remain <= 10);
+            if (showText) {
+                gc.setFill(Color.WHITE);
+                gc.setFont(javafx.scene.text.Font.font("Arial", javafx.scene.text.FontWeight.BOLD, 16));
+                gc.fillText(String.valueOf(remain), nX - 8, nY + 6);
+            }
+        }
+
+        // TẦNG 6: GIAO DIỆN GỠ LỖI (Tia Bezier)
+        if (isDebugMode) {
+            for (Vehicle v : vehicles) {
+                gc.setStroke(Color.CYAN); gc.setLineWidth(1); gc.strokeRect(v.getX() - v.getWidth()/2, v.getY() - v.getHeight()/2, v.getWidth(), v.getHeight());
+                if (v.isTurning()) {
+                    gc.setStroke(Color.MAGENTA);
+                    gc.strokeLine(v.getP0x(), v.getP0y(), v.getP1x(), v.getP1y()); gc.strokeLine(v.getP1x(), v.getP1y(), v.getP2x(), v.getP2y());
+                }
+            }
+        }
+        
+        gc.restore(); 
+
+        // TẦNG 7: VẼ MƯA RƠI (Bám theo màn hình kính lái)
+        if (config.Constants.IS_RAINING) {
+            gc.setStroke(Color.rgb(200, 220, 255, 0.6)); 
+            gc.setLineWidth(1.5);
+            for (int i = 0; i < 300; i++) {
+                gc.strokeLine(rainX[i], rainY[i], rainX[i] - 3, rainY[i] + 15);
+                rainY[i] += 25; 
+                rainX[i] -= 5;
+                if (rainY[i] > canvas.getHeight()) {
+                    rainY[i] = -20;
+                    rainX[i] = Math.random() * canvas.getWidth() + 100;
+                }
+            }
+        }
+    }
+
+    private void drawDashedLine(double sx, double sy, double ex, double ey, double offset) {
+        double angle = Math.atan2(ey - sy, ex - sx);
+        double p1x = sx + Math.cos(angle + Math.PI / 2) * offset;
+        double p1y = sy + Math.sin(angle + Math.PI / 2) * offset;
+        double p2x = ex + Math.cos(angle + Math.PI / 2) * offset;
+        double p2y = ey + Math.sin(angle + Math.PI / 2) * offset;
+
+        gc.setStroke(Color.WHITE);
+        gc.setLineWidth(2);
+        gc.setLineDashes(15, 15); 
+        gc.strokeLine(p1x, p1y, p2x, p2y);
+        gc.setLineDashes(null); 
+    }
+    public javafx.scene.canvas.Canvas getCanvas() { return canvas; }
+    public void clearAllVehicles() { vehicles.clear(); }
+    public void resetCamera() { 
+            zoomScale = 1.0; 
+            if (!cityMap.getNodes().isEmpty()) {
+                IntersectionNode centerNode = cityMap.getNodes().get(0);
+                cameraX = centerNode.getX() - (canvas.getWidth() / 2);
+                cameraY = centerNode.getY() - (canvas.getHeight() / 2);
+            }
+        }
+    //đổi chế độ đèn
+    public void setTrafficLightMode(int modeIndex) {
+        IntersectionNode.LightMode mode = IntersectionNode.LightMode.NORMAL; // 0: Không đếm
+        if (modeIndex == 1) mode = IntersectionNode.LightMode.COUNTDOWN;     // 1: Đếm toàn thời gian
+        else if (modeIndex == 2) mode = IntersectionNode.LightMode.SMART_COUNTDOWN; // 2: Đếm khi <=10s
+
+        for (IntersectionNode node : cityMap.getNodes()) {
+            node.setLightMode(mode);
+        }
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\map\CityMap.java =====
+
+package model.map;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class CityMap {
+    private List<IntersectionNode> nodes = new ArrayList<>();
+    private List<RoadEdge> roads = new ArrayList<>();
+
+    public CityMap() { loadMap("Mạng lưới"); }
+
+    public void loadMap(String mapType) {
+        nodes.clear();
+        roads.clear();
+
+        if (mapType.equals("Ngã Ba")   || mapType.equals("Ngã 3"))         { buildThreeWay();    }
+        else if (mapType.equals("Ngã Tư")   || mapType.equals("Ngã 4"))  { buildFourWay();     }
+        else if (mapType.equals("Ngã Năm")  || mapType.equals("Bùng binh")) { buildRoundabout(); }
+        else { buildDefaultCity(); }
+        finalizeConnections(); // Scan roads → set connected directions for each node
+    }
+
+    // ============================================================
+    // NGÃ 3 - T-Intersection: Đông-Tây + một cánh phía Nam
+    // Xe vào từ 3 hướng (W, E, S), trung tâm ở giữa canvas
+    // ============================================================
+    private void buildThreeWay() {
+        double cx = 640, cy = 450;
+        IntersectionNode center = new IntersectionNode("Ngã 3", cx, cy, IntersectionNode.NodeType.THREE_WAY);
+        nodes.add(center);
+
+        // Spawn nodes ngoài rìa màn hình (~800px từ center)
+        IntersectionNode wSpawn = new IntersectionNode("W", cx - 900, cy, IntersectionNode.NodeType.THREE_WAY, true);
+        IntersectionNode eSpawn = new IntersectionNode("E", cx + 900, cy, IntersectionNode.NodeType.THREE_WAY, true);
+        IntersectionNode sSpawn = new IntersectionNode("S", cx, cy + 900, IntersectionNode.NodeType.THREE_WAY, true);
+
+        // Tất cả đường đều đi VÀO center (spawn tại startNode)
+        roads.add(new RoadEdge(wSpawn, center, RoadEdge.RoadType.AVENUE));
+        roads.add(new RoadEdge(eSpawn, center, RoadEdge.RoadType.AVENUE));
+        roads.add(new RoadEdge(sSpawn, center, RoadEdge.RoadType.AVENUE));
+    }
+
+    // ============================================================
+    // NGÃ 4 - Giao lộ 4 hướng chuẩn
+    // Xe vào từ W, E, N, S
+    // ============================================================
+    private void buildFourWay() {
+        double cx = 640, cy = 400;
+        IntersectionNode center = new IntersectionNode("Ngã 4", cx, cy, IntersectionNode.NodeType.FOUR_WAY);
+        nodes.add(center);
+
+        IntersectionNode wSpawn = new IntersectionNode("W", cx - 900, cy, IntersectionNode.NodeType.THREE_WAY, true);
+        IntersectionNode eSpawn = new IntersectionNode("E", cx + 900, cy, IntersectionNode.NodeType.THREE_WAY, true);
+        IntersectionNode nSpawn = new IntersectionNode("N", cx, cy - 900, IntersectionNode.NodeType.THREE_WAY, true);
+        IntersectionNode sSpawn = new IntersectionNode("S", cx, cy + 900, IntersectionNode.NodeType.THREE_WAY, true);
+
+        roads.add(new RoadEdge(wSpawn, center, RoadEdge.RoadType.AVENUE));
+        roads.add(new RoadEdge(eSpawn, center, RoadEdge.RoadType.AVENUE));
+        roads.add(new RoadEdge(nSpawn, center, RoadEdge.RoadType.AVENUE));
+        roads.add(new RoadEdge(sSpawn, center, RoadEdge.RoadType.AVENUE));
+    }
+
+    // ============================================================
+    // NGÃ 5 - Bùng binh 5 cánh (4 cánh cardinal + 1 cánh Tây-Bắc)
+    // Node FIVE_WAY → hiển thị đảo tròn + không có đèn tín hiệu
+    // ============================================================
+    private void buildRoundabout() {
+        double cx = 640, cy = 450;
+        IntersectionNode center = new IntersectionNode("Ngã 5", cx, cy, IntersectionNode.NodeType.FIVE_WAY);
+        nodes.add(center);
+
+        // 4 cánh cardinal + 1 cánh Tây-Bắc (góc ~45°)
+        IntersectionNode wSpawn  = new IntersectionNode("W",  cx - 900, cy,       IntersectionNode.NodeType.THREE_WAY, true);
+        IntersectionNode eSpawn  = new IntersectionNode("E",  cx + 900, cy,       IntersectionNode.NodeType.THREE_WAY, true);
+        IntersectionNode nSpawn  = new IntersectionNode("N",  cx,       cy - 900, IntersectionNode.NodeType.THREE_WAY, true);
+        IntersectionNode sSpawn  = new IntersectionNode("S",  cx,       cy + 900, IntersectionNode.NodeType.THREE_WAY, true);
+        IntersectionNode nwSpawn = new IntersectionNode("NW", cx - 650, cy - 650, IntersectionNode.NodeType.THREE_WAY, true);
+
+        roads.add(new RoadEdge(wSpawn,  center, RoadEdge.RoadType.AVENUE));
+        roads.add(new RoadEdge(eSpawn,  center, RoadEdge.RoadType.AVENUE));
+        roads.add(new RoadEdge(nSpawn,  center, RoadEdge.RoadType.AVENUE));
+        roads.add(new RoadEdge(sSpawn,  center, RoadEdge.RoadType.AVENUE));
+        roads.add(new RoadEdge(nwSpawn, center, RoadEdge.RoadType.AVENUE));
+    }
+
+    // ============================================================
+    // MẠNG LƯỚI RỘNG - Lưới 3×3 với bùng binh ở trung tâm
+    // 9 ngã tư + 12 spawn node ngoài rìa
+    // Khoảng cách giữa ngã tư: 300px
+    // ============================================================
+    private void buildDefaultCity() {
+        double cx = 640, cy = 400;
+        double sp = 300; // spacing giữa các ngã tư
+
+        // --- 9 NÚT GIAO CHÍNH (đa dạng loại ngã) ---
+        // Góc: Ngã 3 (chỉ có 3 hướng vì là góc lưới)
+        IntersectionNode nw = new IntersectionNode("NW", cx-sp, cy-sp, IntersectionNode.NodeType.THREE_WAY);
+        IntersectionNode ne = new IntersectionNode("NE", cx+sp, cy-sp, IntersectionNode.NodeType.THREE_WAY);
+        IntersectionNode sw = new IntersectionNode("SW", cx-sp, cy+sp, IntersectionNode.NodeType.THREE_WAY);
+        IntersectionNode se = new IntersectionNode("SE", cx+sp, cy+sp, IntersectionNode.NodeType.THREE_WAY);
+        // Cạnh giữa: Ngã 4 (4 hướng)
+        IntersectionNode nc = new IntersectionNode("N",  cx,    cy-sp, IntersectionNode.NodeType.FOUR_WAY);
+        IntersectionNode wc = new IntersectionNode("W",  cx-sp, cy,    IntersectionNode.NodeType.FOUR_WAY);
+        IntersectionNode ec = new IntersectionNode("E",  cx+sp, cy,    IntersectionNode.NodeType.FOUR_WAY);
+        IntersectionNode sc = new IntersectionNode("S",  cx,    cy+sp, IntersectionNode.NodeType.FOUR_WAY);
+        // Trung tâm: Ngã 5 – Bùng binh
+        IntersectionNode center = new IntersectionNode("C", cx, cy,    IntersectionNode.NodeType.FIVE_WAY);
+
+        // Center node đầu tiên để camera focus vào giữa
+        nodes.add(center);
+        nodes.add(nw); nodes.add(nc); nodes.add(ne);
+        nodes.add(wc); nodes.add(ec);
+        nodes.add(sw); nodes.add(sc); nodes.add(se);
+
+        // --- 12 ĐƯỜNG NỘI BỘ (BI-DIRECTIONAL) ---
+        // Hàng ngang
+        addBidirectional(nw, nc); addBidirectional(nc, ne);
+        addBidirectional(wc, center); addBidirectional(center, ec);
+        addBidirectional(sw, sc); addBidirectional(sc, se);
+        // Hàng dọc
+        addBidirectional(nw, wc); addBidirectional(wc, sw);
+        addBidirectional(nc, center); addBidirectional(center, sc);
+        addBidirectional(ne, ec); addBidirectional(ec, se);
+
+        // --- 12 SPAWN NODE NGOÀI RÌA ---
+        // Cạnh Bắc (3 spawn)
+        addSpawnRoad(cx-sp, cy-sp-400, nw);
+        addSpawnRoad(cx,    cy-sp-400, nc);
+        addSpawnRoad(cx+sp, cy-sp-400, ne);
+        // Cạnh Nam (3 spawn)
+        addSpawnRoad(cx-sp, cy+sp+400, sw);
+        addSpawnRoad(cx,    cy+sp+400, sc);
+        addSpawnRoad(cx+sp, cy+sp+400, se);
+        // Cạnh Tây (3 spawn)
+        addSpawnRoad(cx-sp-400, cy-sp, nw);
+        addSpawnRoad(cx-sp-400, cy,    wc);
+        addSpawnRoad(cx-sp-400, cy+sp, sw);
+        // Cạnh Đông (3 spawn)
+        addSpawnRoad(cx+sp+400, cy-sp, ne);
+        addSpawnRoad(cx+sp+400, cy,    ec);
+        addSpawnRoad(cx+sp+400, cy+sp, se);
+    }
+
+    // ---- Helpers ----
+
+    /** Tạo 2 đường ngược chiều giữa 2 nút */
+    private void addBidirectional(IntersectionNode a, IntersectionNode b) {
+        roads.add(new RoadEdge(a, b, RoadEdge.RoadType.AVENUE));
+        roads.add(new RoadEdge(b, a, RoadEdge.RoadType.AVENUE));
+    }
+
+    /** Tạo spawn node off-screen và đường 1 chiều vào grid node */
+    private void addSpawnRoad(double spawnX, double spawnY, IntersectionNode to) {
+        IntersectionNode spawn = new IntersectionNode("SPAWN", spawnX, spawnY,
+                IntersectionNode.NodeType.THREE_WAY, true);
+        roads.add(new RoadEdge(spawn, to, RoadEdge.RoadType.AVENUE));
+    }
+
+    /**
+     * Scan toàn bộ đường để xác định hướng kết nối thực sự của từng node.
+     * Gọi sau khi build map xong để IntersectionNode biết bật đèn đúng hướng.
+     */
+    private void finalizeConnections() {
+        for (IntersectionNode node : nodes) {
+            if (node.isSpawnNode()) continue;
+            boolean hasN = false, hasS = false, hasE = false, hasW = false, hasNW = false;
+
+            for (RoadEdge road : roads) {
+                IntersectionNode nb = null;
+                if (road.getStartNode() == node) nb = road.getEndNode();
+                else if (road.getEndNode() == node) nb = road.getStartNode();
+                if (nb == null) continue;
+
+                double dx = nb.getX() - node.getX();
+                double dy = nb.getY() - node.getY();
+                if (Math.hypot(dx, dy) < 1) continue;
+
+                double a = Math.toDegrees(Math.atan2(dy, dx));
+                if (a < 0) a += 360;
+
+                if      (a >= 337.5 || a <  22.5) hasE  = true;
+                else if (a >=  67.5 && a < 112.5) hasS  = true;
+                else if (a >= 157.5 && a < 202.5) hasW  = true;
+                else if (a >= 202.5 && a < 247.5) { hasNW = true; hasW = true; }
+                else if (a >= 247.5 && a < 292.5) hasN  = true;
+                else if (a >=  22.5 && a <  67.5) { hasE = true; hasS = true; }
+                else if (a >= 112.5 && a < 157.5) { hasS = true; hasW = true; }
+                else                               { hasN = true; hasE = true; }
+            }
+            node.setConnectedDirections(hasN, hasS, hasE, hasW, hasNW);
+        }
+    }
+
+    public List<IntersectionNode> getNodes() { return nodes; }
+    public List<RoadEdge> getRoads() { return roads; }
+}
+
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\map\IntersectionNode.java =====
+
+package model.map;
+
+import model.traffic.TrafficLight;
+import model.traffic.TrafficLight.Phase;
+
+public class IntersectionNode {
+    public enum NodeType  { THREE_WAY, FOUR_WAY, FIVE_WAY }
+    public enum LightMode { NORMAL, COUNTDOWN, SMART_COUNTDOWN }
+
+    private String id;
+    private double x, y;
+    private NodeType  type;
+    private LightMode lightMode  = LightMode.SMART_COUNTDOWN;
+    private boolean   isSpawnNode = false;
+
+    // 4 đèn cardinal + 1 đèn NW (chỉ dùng cho FIVE_WAY)
+    private TrafficLight lightNorth = new TrafficLight(Phase.GREEN);
+    private TrafficLight lightSouth = new TrafficLight(Phase.GREEN);
+    private TrafficLight lightEast  = new TrafficLight(Phase.RED);
+    private TrafficLight lightWest  = new TrafficLight(Phase.RED);
+    private TrafficLight lightNW    = new TrafficLight(Phase.RED);
+
+    // Các hướng có đường thực sự kết nối (được set bởi CityMap sau khi build)
+    private boolean hasNorth, hasSouth, hasEast, hasWest, hasNW;
+
+    private double phaseTimer  = 0;
+    private int    currentPhase = 0;
+
+    private static final double GREEN_DURATION  = 15.0;
+    private static final double YELLOW_DURATION = 3.0;
+
+    // -------- Constructors --------
+
+    public IntersectionNode(String id, double x, double y, NodeType type) {
+        this.id = id; this.x = x; this.y = y; this.type = type;
+        applyPhaseStates();
+    }
+
+    public IntersectionNode(String id, double x, double y, NodeType type, boolean isSpawnNode) {
+        this(id, x, y, type);
+        this.isSpawnNode = isSpawnNode;
+    }
+
+    // -------- Direction setup (gọi bởi CityMap) --------
+
+    public void setConnectedDirections(boolean n, boolean s, boolean e, boolean w, boolean nw) {
+        hasNorth = n; hasSouth = s; hasEast = e; hasWest = w; hasNW = nw;
+        phaseTimer   = 0;
+        currentPhase = 0;
+        applyPhaseStates();
+    }
+
+    // -------- Light update --------
+
+    public void updateLights() {
+        if (!config.Constants.AUTO_LIGHTS) return;
+
+        double dt = 1.0 / 60.0;
+        phaseTimer += dt;
+
+        if (type == NodeType.FIVE_WAY) {
+            // FIVE_WAY: 5 pha xoay vòng, mỗi pha = GREEN_DURATION
+            if (phaseTimer >= GREEN_DURATION) {
+                phaseTimer   = 0;
+                currentPhase = (currentPhase + 1) % 5;
+                applyPhaseStates();
+            }
+        } else {
+            // THREE_WAY / FOUR_WAY: 4 pha (green/yellow x2)
+            double duration = (currentPhase % 2 == 0) ? GREEN_DURATION : YELLOW_DURATION;
+            if (phaseTimer >= duration) {
+                phaseTimer   = 0;
+                currentPhase = (currentPhase + 1) % 4;
+                applyPhaseStates();
+            }
+        }
+    }
+
+    public void manualToggle() {
+        int maxPhases = (type == NodeType.FIVE_WAY) ? 5 : 4;
+        currentPhase = (currentPhase + 1) % maxPhases;
+        phaseTimer   = 0;
+        applyPhaseStates();
+    }
+
+    public double getRemainingTime() {
+        if (type == NodeType.FIVE_WAY) return GREEN_DURATION - phaseTimer;
+        double duration = (currentPhase % 2 == 0) ? GREEN_DURATION : YELLOW_DURATION;
+        return duration - phaseTimer;
+    }
+
+    // -------- Phase state machines --------
+
+    private void applyPhaseStates() {
+        switch (type) {
+            case FIVE_WAY  -> applyFiveWayPhase();
+            case THREE_WAY -> applyThreeWayPhase();
+            default        -> applyFourWayPhase();
+        }
+    }
+
+    private void applyFiveWayPhase() {
+        // Mỗi pha: 1 cánh được GREEN, 4 cánh còn lại RED
+        // Thứ tự: 0=West, 1=East, 2=North, 3=South, 4=NW
+        lightWest .setPhase(currentPhase == 0 ? Phase.GREEN : Phase.RED);
+        lightEast .setPhase(currentPhase == 1 ? Phase.GREEN : Phase.RED);
+        lightNorth.setPhase(currentPhase == 2 ? Phase.GREEN : Phase.RED);
+        lightSouth.setPhase(currentPhase == 3 ? Phase.GREEN : Phase.RED);
+        lightNW   .setPhase(currentPhase == 4 ? Phase.GREEN : Phase.RED);
+    }
+
+    private void applyThreeWayPhase() {
+        // Pha 0/1: E+W green/yellow (luồng ngang)
+        // Pha 2/3: N or S green/yellow (cánh dọc còn lại)
+        boolean vertArm = hasNorth || hasSouth;
+        switch (currentPhase) {
+            case 0 -> {
+                lightWest .setPhase(hasWest  ? Phase.GREEN  : Phase.RED);
+                lightEast .setPhase(hasEast  ? Phase.GREEN  : Phase.RED);
+                lightNorth.setPhase(Phase.RED);
+                lightSouth.setPhase(Phase.RED);
+            }
+            case 1 -> {
+                lightWest .setPhase(hasWest  ? Phase.YELLOW : Phase.RED);
+                lightEast .setPhase(hasEast  ? Phase.YELLOW : Phase.RED);
+                lightNorth.setPhase(Phase.RED);
+                lightSouth.setPhase(Phase.RED);
+            }
+            case 2 -> {
+                lightWest .setPhase(Phase.RED);
+                lightEast .setPhase(Phase.RED);
+                lightNorth.setPhase(hasNorth && vertArm ? Phase.GREEN  : Phase.RED);
+                lightSouth.setPhase(hasSouth && vertArm ? Phase.GREEN  : Phase.RED);
+            }
+            case 3 -> {
+                lightWest .setPhase(Phase.RED);
+                lightEast .setPhase(Phase.RED);
+                lightNorth.setPhase(hasNorth && vertArm ? Phase.YELLOW : Phase.RED);
+                lightSouth.setPhase(hasSouth && vertArm ? Phase.YELLOW : Phase.RED);
+            }
+        }
+    }
+
+    private void applyFourWayPhase() {
+        switch (currentPhase) {
+            case 0 -> { lightNorth.setPhase(Phase.GREEN);  lightSouth.setPhase(Phase.GREEN);
+                        lightEast .setPhase(Phase.RED);    lightWest .setPhase(Phase.RED);   }
+            case 1 -> { lightNorth.setPhase(Phase.YELLOW); lightSouth.setPhase(Phase.YELLOW);
+                        lightEast .setPhase(Phase.RED);    lightWest .setPhase(Phase.RED);   }
+            case 2 -> { lightNorth.setPhase(Phase.RED);    lightSouth.setPhase(Phase.RED);
+                        lightEast .setPhase(Phase.GREEN);  lightWest .setPhase(Phase.GREEN); }
+            case 3 -> { lightNorth.setPhase(Phase.RED);    lightSouth.setPhase(Phase.RED);
+                        lightEast .setPhase(Phase.YELLOW); lightWest .setPhase(Phase.YELLOW);}
+        }
+    }
+
+    // -------- Getters --------
+
+    public boolean isSpawnNode()    { return isSpawnNode; }
+    public boolean isHasNorth()     { return hasNorth; }
+    public boolean isHasSouth()     { return hasSouth; }
+    public boolean isHasEast()      { return hasEast; }
+    public boolean isHasWest()      { return hasWest; }
+    public boolean isHasNW()        { return hasNW; }
+    public TrafficLight getLightNorth() { return lightNorth; }
+    public TrafficLight getLightSouth() { return lightSouth; }
+    public TrafficLight getLightEast()  { return lightEast; }
+    public TrafficLight getLightWest()  { return lightWest; }
+    public TrafficLight getLightNW()    { return lightNW; }
+    public String    getId()        { return id; }
+    public double    getX()         { return x; }
+    public double    getY()         { return y; }
+    public NodeType  getType()      { return type; }
+    public LightMode getLightMode() { return lightMode; }
+    public void setLightMode(LightMode m) { this.lightMode = m; }
+    public int getCurrentPhase()    { return currentPhase; }
+}
+
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\map\RoadEdge.java =====
+
+package model.map;
+
+public class RoadEdge {
+    public enum RoadType { AVENUE, STREET, ALLEY } // 3 Loại đường
+
+    private IntersectionNode startNode;
+    private IntersectionNode endNode;
+    
+    private RoadType type;
+    private double width;
+    private double speedLimit;
+    private int lanesPerDirection;
+
+    // Constructor mới
+    public RoadEdge(IntersectionNode startNode, IntersectionNode endNode, RoadType type) {
+        this.startNode = startNode;
+        this.endNode = endNode;
+        this.type = type;
+
+        switch (type) {
+            case AVENUE: this.width = 120; this.speedLimit = 5.0; this.lanesPerDirection = 2; break; // Đại lộ to
+            case STREET: this.width = 80;  this.speedLimit = 3.0; this.lanesPerDirection = 1; break; // Phố vừa
+            case ALLEY:  this.width = 50;  this.speedLimit = 1.5; this.lanesPerDirection = 0; break; // Ngõ hẹp
+        }
+    }
+
+    // Constructor dự phòng (mặc định là Phố)
+    public RoadEdge(IntersectionNode startNode, IntersectionNode endNode) {
+        this(startNode, endNode, RoadType.STREET);
+    }
+
+    public IntersectionNode getStartNode() { return startNode; }
+    public IntersectionNode getEndNode() { return endNode; }
+    public RoadType getType() { return type; }
+    public double getWidth() { return width; }
+    public double getSpeedLimit() { return speedLimit; }
+    public int getLanesPerDirection() { return lanesPerDirection; }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\strategy\AggressiveDriver.java =====
+
+package model.strategy;
+
+public class AggressiveDriver implements DrivingStrategy {
+    @Override
+    public double calculateMaxSpeed(double baseSpeed) {
+        return baseSpeed * 1.4; // Đạp ga phóng nhanh hơn 40% so với tốc độ thiết kế của xe
+    }
+
+    @Override
+    public boolean obeysTrafficLight() {
+        return true; // Vẫn sợ phạt nguội nên không dám vượt đèn đỏ
+    }
+
+    @Override
+    public double getSafeGap() {
+        return config.Constants.IS_RAINING ? 40 : 15; // Điền vào chỗ trống, bám đuôi sát sạt
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\strategy\DrivingStrategy.java =====
+
+package model.strategy;
+
+public interface DrivingStrategy {
+    double calculateMaxSpeed(double baseSpeed); // Tốc độ tối đa muốn đi
+    boolean obeysTrafficLight();                // Có tuân thủ đèn giao thông không?
+    double getSafeGap();                        // Khoảng cách an toàn với xe phía trước
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\strategy\EmergencyDriver.java =====
+
+package model.strategy;
+
+public class EmergencyDriver implements DrivingStrategy {
+    @Override
+    public double calculateMaxSpeed(double baseSpeed) {
+        return baseSpeed * 1.5; 
+    }
+
+    @Override
+    public boolean obeysTrafficLight() {
+        return false; // Lệnh bài miễn tử: Bỏ qua đèn giao thông!
+    }
+
+    @Override
+    public double getSafeGap() {
+        return 10; // Không có thời gian để giữ khoảng cách
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\strategy\NormalDriver.java =====
+
+package model.strategy;
+
+public class NormalDriver implements DrivingStrategy {
+    @Override
+    public double calculateMaxSpeed(double baseSpeed) {
+        return baseSpeed; 
+    }
+
+    @Override
+    public boolean obeysTrafficLight() {
+        return true; 
+    }
+
+    @Override
+    public double getSafeGap() {
+        return config.Constants.IS_RAINING ? 90 : 50; 
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\traffic\TrafficLight.java =====
+
+package model.traffic;
+
+public class TrafficLight {
+    public enum Phase { GREEN, YELLOW, RED }
+    private Phase phase;
+
+    public TrafficLight(Phase initialPhase) {
+        this.phase = initialPhase;
+    }
+
+    public void setPhase(Phase p) { this.phase = p; }
+    public Phase getPhase() { return phase; }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\vehicle\Bicycle.java =====
+
+package model.vehicle;
+
+import javafx.scene.paint.Color;
+
+public class Bicycle extends Vehicle {
+    public Bicycle(double x, double y, double angle) {
+        super(x, y, angle);
+        this.width = 15;
+        this.height = 6;
+        this.color = Color.web("#2ecc71");
+        this.speed = config.Constants.BASE_BICYCLE;
+        this.maxSpeed = config.Constants.BASE_BICYCLE;
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\vehicle\Car.java =====
+
+package model.vehicle;
+
+import javafx.scene.paint.Color;
+
+public class Car extends Vehicle {
+    // Palette màu xe đa dạng (đỏ, cam, xanh dương, tím, xanh lá)
+    private static final Color[] CAR_COLORS = {
+        Color.web("#e74c3c"), // đỏ
+        Color.web("#e67e22"), // cam
+        Color.web("#3498db"), // xanh dương
+        Color.web("#9b59b6"), // tím
+        Color.web("#1abc9c"), // xanh ngọc
+        Color.web("#e91e63"), // hồng
+        Color.web("#ff9800"), // vàng cam
+        Color.web("#607d8b"), // xám xanh
+    };
+    private static int colorIndex = 0;
+
+    public Car(double x, double y, double angle) {
+        super(x, y, angle);
+        this.width = 40;
+        this.height = 20;
+        this.color = CAR_COLORS[colorIndex % CAR_COLORS.length];
+        colorIndex++;
+        this.speed = config.Constants.BASE_CAR;
+        this.maxSpeed = config.Constants.BASE_CAR;
+    }
+}
+
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\vehicle\EmergencyVehicle.java =====
+
+package model.vehicle;
+
+import javafx.scene.paint.Color;
+
+public class EmergencyVehicle extends Vehicle {
+    public EmergencyVehicle(double x, double y, double angle) {
+        super(x, y, angle);
+        this.width = 45;
+        this.height = 22;
+        this.color = Color.web("#ecf0f1");
+        this.speed = config.Constants.BASE_AMBULANCE;
+        this.maxSpeed = config.Constants.BASE_AMBULANCE;
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\vehicle\FireTruck.java =====
+
+package model.vehicle;
+
+import javafx.scene.paint.Color;
+
+public class FireTruck extends EmergencyVehicle {
+    public FireTruck(double x, double y, double angle) {
+        super(x, y, angle);
+        this.width = 65;
+        this.height = 25;
+        this.color = Color.web("#c0392b");
+        this.speed = config.Constants.BASE_FIRETRUCK;
+        this.maxSpeed = config.Constants.BASE_FIRETRUCK; 
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\vehicle\Motorbike.java =====
+
+package model.vehicle;
+
+import javafx.scene.paint.Color;
+
+public class Motorbike extends Vehicle {
+    public Motorbike(double x, double y, double angle) {
+        super(x, y, angle);
+        this.width = 18;
+        this.height = 10;
+        this.color = Color.web("#f1c40f");
+        this.speed = config.Constants.BASE_MOTORBIKE;
+        this.maxSpeed = config.Constants.BASE_MOTORBIKE;
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\model\vehicle\Vehicle.java =====
+
+package model.vehicle;
+
+import javafx.scene.paint.Color;
+import util.TurnType;
+import java.util.List;
+
+public abstract class Vehicle {
+    protected double x, y;
+    protected double width, height;
+    protected double speed;
+    protected double maxSpeed = 3.0; // Tốc độ tối đa
+    protected double angle; 
+    protected Color color;
+
+    // --- BIẾN BEZIER (RẼ CUA) ---
+    protected boolean isTurning = false;  
+    protected TurnType turnType = TurnType.STRAIGHT; 
+    protected double bezierT = 0;         
+    protected double p0x, p0y, p1x, p1y, p2x, p2y; 
+    
+    // --- WAYPOINTS (vòng xuyến) ---
+    private java.util.List<double[]> waypoints = new java.util.ArrayList<>();
+    private int waypointIndex = 0;
+
+    // --- BIẾN NHƯỜNG ĐƯỜNG & CHUYỂN LÀN ---
+    protected int yieldTimer = 0;
+    protected boolean isChangingLane = false;
+    protected double laneChangeProgress = 0;  
+    protected double laneChangeDirection = 0; 
+    protected double laneOffset = 45; 
+    
+    // --- TRẠNG THÁI & STRATEGY ---
+    protected boolean isBroken = false;
+    protected model.strategy.DrivingStrategy strategy;
+
+    public Vehicle(double x, double y, double angle) {
+        this.x = x;
+        this.y = y;
+        this.angle = angle;
+        this.speed = maxSpeed; 
+    }
+
+    // =======================================================
+    // BỘ NÃO DI CHUYỂN (TỰ ĐỘNG TÍNH TOÁN TỌA ĐỘ)
+    // =======================================================
+    // --- WAYPOINT API ---
+    public void setWaypoints(java.util.List<double[]> pts) {
+        waypoints = new java.util.ArrayList<>(pts);
+        waypointIndex = 0;
+        isTurning = false; // Tắt Bezier khi dùng waypoints
+    }
+    public void clearWaypoints() { waypoints.clear(); waypointIndex = 0; }
+    public boolean hasWaypoints() { return waypointIndex < waypoints.size(); }
+
+    public void update(List<Vehicle> allVehicles) {
+        if (isBroken) { this.speed = 0; return; }
+
+        // 0. FOLLOWING WAYPOINTS (vòng xuyến - ưu tiên cao nhất)
+        if (hasWaypoints()) {
+            double[] target = waypoints.get(waypointIndex);
+            double dx = target[0] - this.x;
+            double dy = target[1] - this.y;
+            double dist = Math.hypot(dx, dy);
+            if (dist < 6) {
+                waypointIndex++;
+                if (waypointIndex >= waypoints.size()) clearWaypoints();
+            } else {
+                this.angle = Math.toDegrees(Math.atan2(dy, dx));
+                double ar = Math.toRadians(this.angle);
+                this.x += Math.min(speed, dist) * Math.cos(ar);
+                this.y += Math.min(speed, dist) * Math.sin(ar);
+            }
+            return;
+        }
+
+        // 1. NHƯỜNG ĐƯỜNG xe ưu tiên (chỉ giảm tốc)
+        if (yieldTimer > 0 && !isTurning) {
+            yieldTimer--;
+            this.speed = Math.max(0, this.speed - 0.12);
+        }
+        // 2. ĐANG RẼ TẠI NGÃ TƯ (Bezier)
+        else if (isTurning) {
+            double step = 0.02; // Tốc độ rẽ (Càng nhỏ càng mượt)
+            bezierT += step;
+            if (bezierT >= 1.0) {
+                isTurning = false;
+                this.x = p2x;
+                this.y = p2y;
+                // Chuẩn hóa góc quay về 0-360 độ
+                double finalAngle = Math.toDegrees(Math.atan2(p2y - p1y, p2x - p1x));
+                this.angle = (finalAngle + 360) % 360;
+            } else {
+                double oneMinusT = 1 - bezierT;
+                this.x = oneMinusT * oneMinusT * p0x + 2 * oneMinusT * bezierT * p1x + bezierT * bezierT * p2x;
+                this.y = oneMinusT * oneMinusT * p0y + 2 * oneMinusT * bezierT * p1y + bezierT * bezierT * p2y;
+                // Xe tự động xoay đầu theo đường cong
+                this.angle = Math.toDegrees(Math.atan2(
+                    2 * oneMinusT * (p1y - p0y) + 2 * bezierT * (p2y - p1y),
+                    2 * oneMinusT * (p1x - p0x) + 2 * bezierT * (p2x - p1x)
+                ));
+            }
+        }
+        // 3. ĐI THẲNG BÌNH THƯỜNG & PHANH DỰ ĐOÁN
+        else {
+            // Radar quét xe phía trước
+            // Radar nhẹ để giảm tốc khi có xe cản trước (CollisionSystem xử lý toàn bộ acceleration)
+            Vehicle frontVehicle = detectVehicleAhead(allVehicles, 100);
+            if (frontVehicle != null) {
+                double dist = Math.hypot(frontVehicle.getX() - this.x, frontVehicle.getY() - this.y);
+                if (dist < 60) this.speed = Math.max(0, this.speed * 0.93);
+            }
+
+            // Logic chuyển làn lạng lách (nếu có)
+            if (isChangingLane) {
+                double slideSpeed = 1.0; 
+                laneChangeProgress += slideSpeed;
+                double perpRad = Math.toRadians(angle) + (laneChangeDirection * Math.PI / 2);
+                this.x += slideSpeed * Math.cos(perpRad);
+                this.y += slideSpeed * Math.sin(perpRad);
+                if (laneChangeProgress >= 30) isChangingLane = false;
+            }
+
+            // Tiến lên phía trước theo góc hiện tại
+            double angleRad = Math.toRadians(angle);
+            this.x += speed * Math.cos(angleRad);
+            this.y += speed * Math.sin(angleRad);
+        }
+    }
+
+    // Hàm Radar siêu nhẹ, chỉ quét các xe ở gần
+    private Vehicle detectVehicleAhead(List<Vehicle> allVehicles, double range) {
+        for (Vehicle v : allVehicles) {
+            if (v == this || v.isBroken()) continue;
+            double dist = Math.hypot(v.getX() - this.x, v.getY() - this.y);
+            // Xe phải ở phía trước (khoảng cách nhỏ hơn range) và nằm cùng làn (để tránh quét nhầm làn ngược chiều)
+            if (dist < range) {
+                // Tính góc tương đối để chắc chắn xe kia đang ở trước mặt
+                double angleToTarget = Math.toDegrees(Math.atan2(v.getY() - this.y, v.getX() - this.x));
+                double angleDiff = Math.abs((angleToTarget - this.angle + 360) % 360);
+                if (angleDiff < 45 || angleDiff > 315) return v;
+            }
+        }
+        return null;
+    }
+
+    // =======================================================
+    // CÁC HÀM GETTER / SETTER
+    // =======================================================
+    public double getX() { return x; } public void setX(double x) { this.x = x; }
+    public double getY() { return y; } public void setY(double y) { this.y = y; }
+    public double getWidth() { return width; } public double getHeight() { return height; }
+    public double getAngle() { return angle; } public void setAngle(double angle) { this.angle = angle; }
+    public Color getColor() { return color; }
+    public double getSpeed() { return speed; } public void setSpeed(double speed) { this.speed = speed; }
+    public boolean isTurning() { return isTurning; } public void setTurning(boolean isTurning) { this.isTurning = isTurning; }
+    public TurnType getTurnType() { return turnType; } public void setTurnType(TurnType turnType) { this.turnType = turnType; }
+    public double getBezierT() { return bezierT; } public void setBezierT(double bezierT) { this.bezierT = bezierT; }
+    public void setBezierPoints(double p0x, double p0y, double p1x, double p1y, double p2x, double p2y) {
+        this.p0x = p0x; this.p0y = p0y; this.p1x = p1x; this.p1y = p1y; this.p2x = p2x; this.p2y = p2y;
+    }
+    public double getP0x() { return p0x; } public double getP0y() { return p0y; }
+    public double getP1x() { return p1x; } public double getP1y() { return p1y; }
+    public double getP2x() { return p2x; } public double getP2y() { return p2y; }
+    public int getYieldTimer() { return yieldTimer; } public void setYieldTimer(int yieldTimer) { this.yieldTimer = yieldTimer; }
+    public boolean isChangingLane() { return isChangingLane; } public void setChangingLane(boolean isChangingLane) { this.isChangingLane = isChangingLane; }
+    public double getLaneChangeProgress() { return laneChangeProgress; } public void setLaneChangeProgress(double laneChangeProgress) { this.laneChangeProgress = laneChangeProgress; }
+    public double getLaneChangeDirection() { return laneChangeDirection; } public void setLaneChangeDirection(double laneChangeDirection) { this.laneChangeDirection = laneChangeDirection; }
+    public double getLaneOffset() { return laneOffset; } public void setLaneOffset(double laneOffset) { this.laneOffset = laneOffset; }
+    public boolean isBroken() { return isBroken; } public void setBroken(boolean broken) { this.isBroken = broken; }
+    public model.strategy.DrivingStrategy getStrategy() { return strategy; } public void setStrategy(model.strategy.DrivingStrategy strategy) { this.strategy = strategy; }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\system\CollisionSystem.java =====
+
+package system;
+
+import java.util.List;
+import model.vehicle.Vehicle;
+
+public class CollisionSystem {
+    private static final double SAFE_DISTANCE = 50; 
+
+    public void update(List<Vehicle> vehicles) {
+        
+        // [PHA 1] XE CỨU THƯƠNG PHÁT SÓNG "DẸP ĐƯỜNG"
+        for (Vehicle current : vehicles) {
+            if (current instanceof model.vehicle.EmergencyVehicle) {
+                for (Vehicle other : vehicles) {
+                    // Không quét chính mình hoặc các xe cứu thương khác
+                    if (current == other || other instanceof model.vehicle.EmergencyVehicle) continue;
+                    
+                    // Quét các xe chạy cùng hướng
+                    if (Math.abs(current.getAngle() - other.getAngle()) < 20) {
+                        double dx = other.getX() - current.getX();
+                        double dy = other.getY() - current.getY();
+                        double rad = Math.toRadians(current.getAngle());
+                        double dirX = Math.cos(rad);
+                        double dirY = Math.sin(rad);
+
+                        double axialDist = dx * dirX + dy * dirY;
+                        double lateralDist = Math.abs(dx * (-dirY) + dy * dirX);
+
+                        // Nếu xe thường đang ở PHÍA TRƯỚC (trong 250px) và cùng làn đường
+                        if (axialDist > 0 && axialDist < 250 && lateralDist < 40) {
+                            other.setYieldTimer(60); // Bật trạng thái dạt lề trong 60 frame (~1 giây)
+                        }
+                    }
+                }
+            }
+        }
+
+        // [PHA 2] LOGIC CHỐNG ĐÈ XE BÌNH THƯỜNG
+        for (Vehicle current : vehicles) {
+            Vehicle blocker = null;
+            double minDist = 120; 
+
+            for (Vehicle other : vehicles) {
+                if (current == other) continue;
+
+                if (Math.abs(current.getAngle() - other.getAngle()) < 10) {
+                    double dx = other.getX() - current.getX();
+                    double dy = other.getY() - current.getY();
+                    double rad = Math.toRadians(current.getAngle());
+                    double dirX = Math.cos(rad);
+                    double dirY = Math.sin(rad);
+
+                    double axialDist = dx * dirX + dy * dirY;
+                    double lateralDist = Math.abs(dx * (-dirY) + dy * dirX);
+
+                    // ĐẶC QUYỀN: Xe cứu thương nhắm mắt ngó lơ, không phanh lại sau đuôi những xe đang dạt lề!
+                    if (current instanceof model.vehicle.EmergencyVehicle && other.getYieldTimer() > 0) {
+                        continue; 
+                    }
+
+                    if (axialDist > 0 && axialDist < minDist && lateralDist < 25) {
+                        minDist = axialDist;
+                        blocker = other;
+                    }
+                }
+            }
+
+            if (blocker != null) {
+                double gap = minDist - (current.getWidth() / 2 + blocker.getWidth() / 2);
+                
+                // MỚI: Mỗi tài xế có một giới hạn giữ khoảng cách an toàn khác nhau
+                double safeDist = current.getStrategy().getSafeGap();
+                
+                if (gap < 8) {
+                    current.setSpeed(0); 
+                } else if (gap < safeDist) { // Thay vì SAFE_DISTANCE cứng nhắc
+                    current.setSpeed(Math.min(current.getSpeed(), blocker.getSpeed()));
+                    
+                    // ---> THUẬT TOÁN VƯỢT XE: Nếu bị chậm lại, thử tìm cách chuyển làn!
+                    // Chỉ chuyển khi đang đi thẳng, chưa chuyển làn, và không phải đang nhường đường xe cứu thương
+                    if (!current.isTurning() && !current.isChangingLane() && current.getYieldTimer() == 0) {
+                        
+                        double currentOffset = current.getLaneOffset();
+                        // Tính làn mục tiêu (Nếu đang ở 45 thì sang 15, và ngược lại)
+                        double targetOffset = (currentOffset == 45) ? 15 : 45;
+                        // Hướng trượt ngang: 45->15 là sang Trái (-1), 15->45 là sang Phải (1)
+                        double direction = (currentOffset == 45) ? -1 : 1; 
+                        
+                        boolean canChange = true;
+                        
+                        // Quét xem làn bên kia có xe nào đang chắn không?
+                        for (Vehicle check : vehicles) {
+                            if (check == current) continue;
+                            if (Math.abs(current.getAngle() - check.getAngle()) < 10) { // Cùng hướng
+                                // Nếu xe kia đang ở làn mục tiêu, hoặc cũng đang chuyển vào làn đó
+                                if (check.getLaneOffset() == targetOffset || check.isChangingLane()) {
+                                    double dx2 = check.getX() - current.getX();
+                                    double dy2 = check.getY() - current.getY();
+                                    double rad2 = Math.toRadians(current.getAngle());
+                                    // Chiếu lên trục dọc để xem khoảng cách
+                                    double axialDist2 = dx2 * Math.cos(rad2) + dy2 * Math.sin(rad2);
+                                    
+                                    // Yêu cầu khoảng trống an toàn: 60px phía sau và 100px phía trước mặt
+                                    if (axialDist2 > -60 && axialDist2 < 100) {
+                                        canChange = false; // Có xe cản -> Hủy ý định vượt
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Làn bên cạnh hoàn toàn trống -> Quyết định đánh lái vượt!
+                        if (canChange) {
+                            current.setChangingLane(true);
+                            current.setLaneChangeProgress(0);
+                            current.setLaneChangeDirection(direction);
+                            current.setLaneOffset(targetOffset); // "Xí" chỗ làn mới ngay lập tức
+                            util.SoundManager.playSignal(); // 🔊 BẬT XI-NHAN
+                        }
+                    }
+                }
+            } else {
+                // Tốc độ cơ sở × hệ số từ thanh trượt UI
+                double baseSpeed = config.Constants.BASE_CAR * config.Constants.SPEED_CAR;
+                if (current instanceof model.vehicle.FireTruck)
+                    baseSpeed = config.Constants.BASE_FIRETRUCK * config.Constants.SPEED_FIRETRUCK;
+                else if (current instanceof model.vehicle.EmergencyVehicle)
+                    baseSpeed = config.Constants.BASE_AMBULANCE * config.Constants.SPEED_AMBULANCE;
+                else if (current instanceof model.vehicle.Motorbike)
+                    baseSpeed = config.Constants.BASE_MOTORBIKE * config.Constants.SPEED_MOTORBIKE;
+                else if (current instanceof model.vehicle.Bicycle)
+                    baseSpeed = config.Constants.BASE_BICYCLE * config.Constants.SPEED_BICYCLE;
+
+                // 2. Chuyển qua cho "Bộ não" tính toán xem tài xế này muốn phóng bao nhiêu
+                double maxSpeed = current.getStrategy().calculateMaxSpeed(baseSpeed);
+                
+                // 3. Thực hiện tăng ga từ từ
+                if (current.getSpeed() < maxSpeed) {
+                    current.setSpeed(Math.min(maxSpeed, current.getSpeed() + 0.15));
+                }
+            }
+        }
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\system\MovementSystem.java =====
+
+package system;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import model.map.CityMap;
+import model.map.IntersectionNode;
+import model.map.RoadEdge;
+import model.vehicle.Vehicle;
+import util.TurnType;
+
+public class MovementSystem {
+    private Random random = new Random();
+
+    public void updatePositions(List<Vehicle> vehicles, CityMap cityMap) {
+        for (Vehicle v : vehicles) {
+            if (v.isBroken() || v.isTurning() || v.hasWaypoints()) continue;
+
+            for (IntersectionNode node : cityMap.getNodes()) {
+                if (node.isSpawnNode()) continue;
+                double dist = Math.hypot(v.getX() - node.getX(), v.getY() - node.getY());
+                if (dist < 75) {
+                    startTurning(v, node, cityMap);
+                    break;
+                }
+            }
+        }
+    }
+
+    private void startTurning(Vehicle v, IntersectionNode node, CityMap cityMap) {
+
+        // ============================================================
+        // FIVE_WAY: Sử dụng waypoints ôm vòng xuyến
+        // ============================================================
+        if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
+            computeRoundaboutWaypoints(v, node, cityMap);
+            return;
+        }
+
+        // ============================================================
+        // Ngã thường: Bezier
+        // ============================================================
+
+        // Bước A: Quét Radar tìm đường
+        boolean[] hasRoad = new boolean[4]; // [0:Đông, 1:Nam, 2:Tây, 3:Bắc]
+        for (RoadEdge road : cityMap.getRoads()) {
+            IntersectionNode neighbor = null;
+            if (road.getStartNode() == node) neighbor = road.getEndNode();
+            else if (road.getEndNode() == node) neighbor = road.getStartNode();
+            if (neighbor == null) continue;
+            double dx = neighbor.getX() - node.getX();
+            double dy = neighbor.getY() - node.getY();
+            if (Math.abs(dx) > Math.abs(dy)) {
+                if (dx > 0) hasRoad[0] = true; else hasRoad[2] = true;
+            } else {
+                if (dy > 0) hasRoad[1] = true; else hasRoad[3] = true;
+            }
+        }
+
+        // Bước B: Quyết định hướng rẽ hợp lệ
+        int currentDir = (int) Math.round(v.getAngle() / 90.0) % 4;
+        if (currentDir < 0) currentDir += 4;
+
+        List<TurnType> validTurns = new ArrayList<>();
+        if (hasRoad[currentDir])              validTurns.add(TurnType.STRAIGHT);
+        if (hasRoad[(currentDir + 1) % 4])    validTurns.add(TurnType.RIGHT);
+        if (hasRoad[(currentDir + 3) % 4])    validTurns.add(TurnType.LEFT);
+        if (validTurns.isEmpty())             validTurns.add(TurnType.STRAIGHT);
+
+        TurnType turn = validTurns.get(random.nextInt(validTurns.size()));
+
+        // Bước C: Tính Bezier cho ngã thường
+        double cx = node.getX(), cy = node.getY();
+        double offset = v.getLaneOffset();
+        double bound  = 85;
+        double p0x = v.getX(), p0y = v.getY();
+        double p1x = cx, p1y = cy, p2x = cx, p2y = cy;
+
+        switch (currentDir) {
+            case 0: // ĐÔNG
+                if (turn == TurnType.RIGHT)      { p1x=cx-offset; p1y=cy+offset; p2x=cx-offset; p2y=cy+bound; }
+                else if (turn == TurnType.LEFT)  { p1x=cx+offset; p1y=cy+offset; p2x=cx+offset; p2y=cy-bound; }
+                else                             { p1x=cx;        p1y=cy+offset; p2x=cx+bound;  p2y=cy+offset; } break;
+            case 1: // NAM
+                if (turn == TurnType.RIGHT)      { p1x=cx-offset; p1y=cy-offset; p2x=cx-bound;  p2y=cy-offset; }
+                else if (turn == TurnType.LEFT)  { p1x=cx-offset; p1y=cy+offset; p2x=cx+bound;  p2y=cy+offset; }
+                else                             { p1x=cx-offset; p1y=cy;        p2x=cx-offset; p2y=cy+bound;  } break;
+            case 2: // TÂY
+                if (turn == TurnType.RIGHT)      { p1x=cx+offset; p1y=cy-offset; p2x=cx+offset; p2y=cy-bound; }
+                else if (turn == TurnType.LEFT)  { p1x=cx-offset; p1y=cy-offset; p2x=cx-offset; p2y=cy+bound; }
+                else                             { p1x=cx;        p1y=cy-offset; p2x=cx-bound;  p2y=cy-offset; } break;
+            case 3: // BẮC
+                if (turn == TurnType.RIGHT)      { p1x=cx+offset; p1y=cy+offset; p2x=cx+bound;  p2y=cy+offset; }
+                else if (turn == TurnType.LEFT)  { p1x=cx+offset; p1y=cy-offset; p2x=cx-bound;  p2y=cy-offset; }
+                else                             { p1x=cx+offset; p1y=cy;        p2x=cx+offset; p2y=cy-bound;  } break;
+        }
+
+        v.setBezierPoints(p0x, p0y, p1x, p1y, p2x, p2y);
+        v.setTurning(true);
+        v.setBezierT(0);
+        v.setTurnType(turn);
+    }
+
+    // ============================================================
+    // ROUNDABOUT: Tính waypoints ôm theo vòng xuyến
+    //
+    // Xe đi theo luật giao thông VN (đường phải):
+    //   vào vòng → rẽ phải dọc theo vành ngoài → thoát ra cánh mong muốn
+    //
+    // Thứ tự CCW trên màn hình (Y-down): W → S → E → N → W
+    //   ring[0]=West, ring[1]=South, ring[2]=East, ring[3]=North
+    // ============================================================
+    private void computeRoundaboutWaypoints(Vehicle v, IntersectionNode node, CityMap cityMap) {
+        double cx = node.getX(), cy = node.getY();
+        double R   = 62;   // Bán kính làn vòng xuyến (> đảo cỏ 40px)
+        double off = 15;   // Offset làn phải cố định
+
+        // Hướng xe đang đi (0=Đông,1=Nam,2=Tây,3=Bắc)
+        int entryDir = (int) Math.round(v.getAngle() / 90.0) % 4;
+        if (entryDir < 0) entryDir += 4;
+
+        // Tìm các cánh exit hợp lệ
+        boolean[] hasExit = new boolean[4];
+        for (RoadEdge road : cityMap.getRoads()) {
+            IntersectionNode nb = null;
+            if (road.getStartNode() == node) nb = road.getEndNode();
+            else if (road.getEndNode() == node) nb = road.getStartNode();
+            if (nb == null) continue;
+            double dx = nb.getX() - cx, dy = nb.getY() - cy;
+            if (Math.abs(dx) > Math.abs(dy)) {
+                if (dx > 0) hasExit[0] = true; else hasExit[2] = true;
+            } else {
+                if (dy > 0) hasExit[1] = true; else hasExit[3] = true;
+            }
+        }
+
+        // Chọn exit ngẫu nhiên (không U-turn = opposite dir)
+        List<Integer> exits = new ArrayList<>();
+        for (int d = 0; d < 4; d++) {
+            if (d == (entryDir + 2) % 4) continue; // bỏ U-turn
+            if (hasExit[d]) exits.add(d);
+        }
+        if (exits.isEmpty()) {
+            // Fallback: tiếp tục thẳng
+            exits.add(entryDir);
+        }
+        int exitDir = exits.get(random.nextInt(exits.size()));
+
+        // --- Điểm entry/exit trên vành vòng xuyến (có offset làn) ---
+        // Entry: Xe đến từ phía nào thì điểm entry nằm ở phía đó của ring
+        double[] entryPt = ringEntryPoint(cx, cy, R, off, entryDir);
+        double[] exitPt  = ringExitPoint(cx, cy, R, off, exitDir);
+
+        // --- Các điểm ring trung gian (CCW: W→S→E→N→W) ---
+        // ring[0]=West, ring[1]=South, ring[2]=East, ring[3]=North
+        double[][] ringPts = {
+            {cx - R, cy},   // 0: West
+            {cx, cy + R},   // 1: South
+            {cx + R, cy},   // 2: East
+            {cx, cy - R},   // 3: North
+        };
+
+        // Vị trí của entryDir trên vòng CCW
+        int[] entryRingPos = {0, 3, 2, 1}; // dir→ ring position (dir=0/East→pos0/West,...)
+        int[] exitRingPos  = {2, 1, 0, 3}; // dir→ ring position (dir=0/East→pos2/East,...)
+        int ePos = entryRingPos[entryDir];
+        int xPos = exitRingPos[exitDir];
+
+        List<double[]> waypoints = new ArrayList<>();
+        waypoints.add(entryPt);
+
+        // Duyệt CCW từ ePos+1 đến xPos
+        int pos = (ePos + 1) % 4;
+        int maxSteps = 4;
+        while (pos != xPos && maxSteps-- > 0) {
+            waypoints.add(ringPts[pos]);
+            pos = (pos + 1) % 4;
+        }
+
+        // Nếu không có điểm trung gian (góc gần), thêm 1 điểm giữa để mượt hơn
+        if (waypoints.size() == 1) {
+            double midAngle = Math.atan2((entryPt[1] + exitPt[1]) / 2 - cy,
+                                         (entryPt[0] + exitPt[0]) / 2 - cx);
+            waypoints.add(new double[]{cx + R * Math.cos(midAngle), cy + R * Math.sin(midAngle)});
+        }
+
+        waypoints.add(exitPt);
+
+        // Điểm cuối xa trên đường ra (đủ xa để xe thoát khỏi ring)
+        double[] roadEnd = roadExitPoint(cx, cy, R + 90, exitDir, off);
+        waypoints.add(roadEnd);
+
+        v.setWaypoints(waypoints);
+    }
+
+    /** Điểm xe VÀO ring: bên phải (right-hand traffic) của cánh entry */
+    private double[] ringEntryPoint(double cx, double cy, double R, double off, int dir) {
+        return switch (dir) {
+            case 0 -> new double[]{cx - R, cy + off}; // Đến từ W, đi Đông → lane Nam
+            case 1 -> new double[]{cx - off, cy - R}; // Đến từ N, đi Nam  → lane Tây
+            case 2 -> new double[]{cx + R, cy - off}; // Đến từ E, đi Tây  → lane Bắc
+            case 3 -> new double[]{cx + off, cy + R}; // Đến từ S, đi Bắc  → lane Đông
+            default -> new double[]{cx, cy};
+        };
+    }
+
+    /** Điểm xe RA ring: bên phải của cánh exit */
+    private double[] ringExitPoint(double cx, double cy, double R, double off, int dir) {
+        return switch (dir) {
+            case 0 -> new double[]{cx + R, cy + off}; // Ra Đông  → lane Nam
+            case 1 -> new double[]{cx - off, cy + R}; // Ra Nam   → lane Tây
+            case 2 -> new double[]{cx - R, cy - off}; // Ra Tây   → lane Bắc
+            case 3 -> new double[]{cx + off, cy - R}; // Ra Bắc   → lane Đông
+            default -> new double[]{cx, cy};
+        };
+    }
+
+    /** Điểm trên đường ra, đủ xa khỏi ring để xe tiếp tục đi thẳng */
+    private double[] roadExitPoint(double cx, double cy, double dist, int dir, double off) {
+        return switch (dir) {
+            case 0 -> new double[]{cx + dist, cy + off};
+            case 1 -> new double[]{cx - off, cy + dist};
+            case 2 -> new double[]{cx - dist, cy - off};
+            case 3 -> new double[]{cx + off, cy - dist};
+            default -> new double[]{cx, cy};
+        };
+    }
+}
+
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\system\SpawnSystem.java =====
+
+package system;
+
+import config.Constants;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import model.map.CityMap;
+import model.map.RoadEdge;
+import model.vehicle.*;
+
+public class SpawnSystem {
+    private Random random = new Random();
+    private int spawnDelay = 20;
+    private boolean spawnEnabled = true;
+    private int totalFrames = 0;
+    private static final int EMERGENCY_UNLOCK_FRAMES = 480; // ~8 giây ở 60fps
+
+    public void setSpawnDelay(int delay) { this.spawnDelay = delay; }
+    public void setSpawnEnabled(boolean enabled) { this.spawnEnabled = enabled; }
+    public void resetTimer() { totalFrames = 0; } // Gọi khi đổi map
+
+    public void spawnRandom(List<Vehicle> vehicles, CityMap cityMap) {
+        if (!spawnEnabled) return;
+        totalFrames++;
+        int currentDelay = Math.max(1, spawnDelay);
+        if (random.nextInt(currentDelay) != 0) return;
+
+        // Chỉ chọn các đường bắt đầu từ spawn node (ngoài rìa màn hình)
+        List<RoadEdge> spawnableRoads = new ArrayList<>();
+        for (RoadEdge road : cityMap.getRoads()) {
+            if (road.getStartNode().isSpawnNode()) {
+                spawnableRoads.add(road);
+            }
+        }
+        // Fallback nếu không có spawn node nào
+        if (spawnableRoads.isEmpty()) spawnableRoads = cityMap.getRoads();
+        if (spawnableRoads.isEmpty()) return;
+
+        RoadEdge road = spawnableRoads.get(random.nextInt(spawnableRoads.size()));
+        double sx = road.getStartNode().getX();
+        double sy = road.getStartNode().getY();
+        double ex = road.getEndNode().getX();
+        double ey = road.getEndNode().getY();
+        double angleRad = Math.atan2(ey - sy, ex - sx);
+
+        // Phân phối loại xe: 3% Ambulance, 2% FireTruck, 10% Bicycle, 25% Motorbike, 60% Car
+        int randType = random.nextInt(100);
+
+        // Tính offset làn: xe thường dùng 1 trong 2 làn (15px hoặc 45px từ tim đường)
+        double offset;
+        if (randType < 5) {
+            offset = 30; // Xe ưu tiên chạy giữa vạch tim đường
+        } else {
+            offset = random.nextBoolean() ? 15 : 45;
+        }
+
+        double spawnX = sx + Math.cos(angleRad + Math.PI / 2) * offset;
+        double spawnY = sy + Math.sin(angleRad + Math.PI / 2) * offset;
+        double angle  = Math.toDegrees(angleRad);
+
+        // Xe ưu tiên chỉ xuất hiện sau EMERGENCY_UNLOCK_FRAMES frames (~8 giây)
+        boolean emergencyAllowed = totalFrames >= EMERGENCY_UNLOCK_FRAMES;
+        if (randType < 5 && !emergencyAllowed) randType = 50; // downgrade thành xe thường
+
+        Vehicle newVehicle;
+        if (randType < 3) {
+            newVehicle = new EmergencyVehicle(spawnX, spawnY, angle);
+        } else if (randType < 5) {
+            newVehicle = new FireTruck(spawnX, spawnY, angle);
+        } else if (randType < 15) {
+            newVehicle = new Bicycle(spawnX, spawnY, angle);
+        } else if (randType < 40) {
+            newVehicle = new Motorbike(spawnX, spawnY, angle);
+        } else {
+            newVehicle = new Car(spawnX, spawnY, angle);
+        }
+
+        newVehicle.setLaneOffset(offset);
+
+        // Gắn bộ não lái xe (Strategy)
+        if (newVehicle instanceof EmergencyVehicle) {
+            newVehicle.setStrategy(new model.strategy.EmergencyDriver());
+        } else if (newVehicle instanceof Bicycle) {
+            newVehicle.setStrategy(new model.strategy.NormalDriver()); // Xe đạp luôn tuân thủ luật
+        } else {
+            if (random.nextInt(100) < 20) {
+                newVehicle.setStrategy(new model.strategy.AggressiveDriver());
+            } else {
+                newVehicle.setStrategy(new model.strategy.NormalDriver());
+            }
+        }
+
+        vehicles.add(newVehicle);
+    }
+}
+
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\system\TrafficRuleSystem.java =====
+
+package system;
+
+import java.util.List;
+import model.map.IntersectionNode;
+import model.traffic.TrafficLight;
+import model.vehicle.Vehicle;
+
+public class TrafficRuleSystem {
+    
+    public void applyRules(List<Vehicle> vehicles, List<IntersectionNode> nodes) {
+        for (Vehicle v : vehicles) {
+            
+            // ĐẶC QUYỀN: Hỏi xem bộ não của tài xế này có tuân thủ đèn giao thông không?
+        if (!v.getStrategy().obeysTrafficLight()) {
+            continue; 
+        }
+            IntersectionNode targetNode = null;
+            double minDist = 180; 
+
+            // 1. Tìm ngã tư gần nhất trước mặt
+            for (IntersectionNode node : nodes) {
+                double dx = node.getX() - v.getX();
+                double dy = node.getY() - v.getY();
+                
+                double rad = Math.toRadians(v.getAngle());
+                double dirX = Math.cos(rad);
+                double dirY = Math.sin(rad);
+
+                double axialDist = dx * dirX + dy * dirY; 
+                double lateralDist = Math.abs(dx * (-dirY) + dy * dirX); 
+
+                if (axialDist > 0 && axialDist < minDist && lateralDist < 100) {
+                    minDist = axialDist;
+                    targetNode = node;
+                }
+            }
+
+            // Nếu đường thoáng hoặc là Ngã 5 (Bùng binh) thì cứ đi tiếp, không bắt dừng đèn
+            if (targetNode == null || targetNode.getType() == IntersectionNode.NodeType.FIVE_WAY) continue; 
+
+            TrafficLight lightToObey = null;
+            
+            // 2. Chuyển đổi góc (Angle) sang Hướng để nhìn đúng đèn
+            double angle = v.getAngle() % 360;
+            if (angle < 0) angle += 360;
+            
+            if (angle >= 315 || angle < 45) { // Góc ~0: Xe đi từ Tây sang Đông -> Nhìn đèn Tây
+                lightToObey = targetNode.getLightWest();
+            } else if (angle >= 45 && angle < 135) { // Góc ~90: Xe đi từ Bắc xuống Nam -> Nhìn đèn Bắc
+                lightToObey = targetNode.getLightNorth();
+            } else if (angle >= 135 && angle < 225) { // Góc ~180: Xe đi từ Đông sang Tây -> Nhìn đèn Đông
+                lightToObey = targetNode.getLightEast();
+            } else { // Góc ~270: Xe đi từ Nam lên Bắc -> Nhìn đèn Nam
+                lightToObey = targetNode.getLightSouth();
+            }
+
+            if (lightToObey == null) continue;
+
+            // 3. Phanh khi gặp đèn Đỏ hoặc Vàng
+            // stopDist: xe dừng sao cho đầu xe nằm TRƯỚC vạch dừng (halfW + 15px)
+            // halfW = ROAD_WIDTH/2 = 60. Tâm xe dừng ở 60+15+halfLength ≈ 60+15+20 = 95px từ tâm ngã tư
+            double stopDist = config.Constants.ROAD_WIDTH / 2 + 15 + v.getWidth() / 2;
+            if (lightToObey.getPhase() == TrafficLight.Phase.RED
+                    || lightToObey.getPhase() == TrafficLight.Phase.YELLOW) {
+                if (minDist <= stopDist + 5) {
+                    v.setSpeed(0);
+                } else if (minDist < 160) {
+                    double brakeStrength = Math.sqrt(Math.max(0, 2 * 0.08 * (minDist - stopDist)));
+                    v.setSpeed(Math.min(v.getSpeed(), brakeStrength));
+                }
+            }
+        }
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\util\Direction.java =====
+
+package util;
+
+public enum Direction {
+    NORTH, SOUTH, EAST, WEST, NORTHEAST
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\util\Lane.java =====
+
+package util;
+
+public enum Lane {
+    LEFT, RIGHT // Vì chúng ta thiết kế 2 làn mỗi chiều
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\util\PathBuilder.java =====
+
+package util;
+
+public class PathBuilder {
+    
+    // Tính tọa độ X trên đường cong Bezier bậc 2 tại thời điểm t (từ 0.0 đến 1.0)
+    public static double getBezierX(double p0x, double p1x, double p2x, double t) {
+        return Math.pow(1 - t, 2) * p0x + 2 * (1 - t) * t * p1x + Math.pow(t, 2) * p2x;
+    }
+
+    // Tính tọa độ Y trên đường cong Bezier bậc 2 tại thời điểm t
+    public static double getBezierY(double p0y, double p1y, double p2y, double t) {
+        return Math.pow(1 - t, 2) * p0y + 2 * (1 - t) * t * p1y + Math.pow(t, 2) * p2y;
+    }
+
+    // Tính GÓC XOAY của vô lăng (Tiếp tuyến của đường cong) để đầu xe luôn hướng theo đường đi
+    public static double getBezierAngle(double p0x, double p0y, double p1x, double p1y, double p2x, double p2y, double t) {
+        double dx = 2 * (1 - t) * (p1x - p0x) + 2 * t * (p2x - p1x);
+        double dy = 2 * (1 - t) * (p1y - p0y) + 2 * t * (p2y - p1y);
+        return Math.toDegrees(Math.atan2(dy, dx));
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\util\SoundManager.java =====
+
+package util;
+
+import javafx.scene.media.AudioClip;
+
+public class SoundManager {
+    private static AudioClip ambulance, firetruck, signal, horn;
+    public static boolean isMuted = false;
+
+    // Load file âm thanh bằng phương thức getResource chuẩn của Java
+    static {
+        try {
+            ambulance = new AudioClip(SoundManager.class.getResource("/audio/ambulance.mp3").toExternalForm());
+            firetruck = new AudioClip(SoundManager.class.getResource("/audio/firetruck.mp3").toExternalForm());
+            signal = new AudioClip(SoundManager.class.getResource("/audio/signal.mp3").toExternalForm());
+            horn = new AudioClip(SoundManager.class.getResource("/audio/horn.mp3").toExternalForm());
+        } catch (Exception e) {
+            System.out.println("⚠️ Lỗi tải âm thanh: " + e.getMessage());
+        }
+    }
+
+    public static void playAmbulance() {
+        if (isMuted || ambulance == null) return;
+        if (!ambulance.isPlaying()) ambulance.play(0.3); 
+    }
+
+    public static void playFiretruck() {
+        if (isMuted || firetruck == null) return;
+        if (!firetruck.isPlaying()) firetruck.play(0.3);
+    }
+
+    public static void playSignal() {
+        if (isMuted || signal == null) return;
+        if (!signal.isPlaying()) signal.play(0.5);
+    }
+
+    public static void playHorn() {
+        if (isMuted || horn == null) return;
+        if (!horn.isPlaying()) horn.play(0.4);
+    }
+
+    /** Dừng tất cả âm thanh (khi pause simulation) */
+    public static void pauseAll() {
+        if (ambulance != null && ambulance.isPlaying()) ambulance.stop();
+        if (firetruck != null && firetruck.isPlaying()) firetruck.stop();
+    }
+
+    /** Cho phép âm thanh tự restart khi simulation tiếp tục */
+    public static void resumeAll() {
+        // Sounds will restart automatically on next update() call
+    }
+
+    /** Dừng tất cả âm thanh khi chuyển map */
+    public static void stopAll() {
+        if (ambulance != null) ambulance.stop();
+        if (firetruck != null) firetruck.stop();
+        if (signal  != null)  signal.stop();
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\util\TurnType.java =====
+
+package util;
+
+public enum TurnType {
+    LEFT, RIGHT, STRAIGHT
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\view\BasicMode.java =====
+
+/*
+ * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
+ * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
+ */
+package view;
+
+/**
+ *
+ * @author VINH - PC
+ */
+public class BasicMode {
+    
+}
+
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\view\GraphicMode.java =====
+
+package view;
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+import model.vehicle.Vehicle;
+import java.util.List;
+
+public class GraphicMode {
+    public void render(GraphicsContext gc, List<Vehicle> vehicles) {
+        for (Vehicle v : vehicles) {
+            gc.save();
+            gc.translate(v.getX(), v.getY());
+            gc.rotate(v.getAngle());
+            
+            // Vẽ thân xe cao cấp hơn v3
+            gc.setFill(Color.web("#3498db"));
+            gc.fillRoundRect(-15, -8, 30, 16, 5, 5);
+            
+            // Vẽ đèn xe giả lập
+            gc.setFill(Color.WHITE);
+            gc.fillRect(10, -5, 4, 3);
+            gc.fillRect(10, 2, 4, 3);
+            
+            gc.restore();
+        }
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\view\MainView.java =====
+
+package view;
+
+import engine.SimulationEngine;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Cursor;
+import javafx.scene.control.*;
+import javafx.scene.layout.*;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+
+public class MainView {
+    private BorderPane root;
+    private SimulationEngine engine;
+    private double lastMouseX, lastMouseY;
+
+    public MainView() {
+        root = new BorderPane();
+        engine = new SimulationEngine(new javafx.scene.canvas.Canvas(config.Constants.WINDOW_WIDTH - 300, config.Constants.WINDOW_HEIGHT));
+        
+        // Cắm Canvas vào giữa
+        root.setCenter(engine.getCanvas());
+        
+        // Tạo Bảng điều khiển siêu cấp bên phải
+        root.setRight(createControlPanel());
+        
+        setupCameraControls();
+    }
+
+    public BorderPane getRoot() { return root; }
+    public void startSimulation() { engine.start(); }
+
+    // --- XÂY DỰNG GIAO DIỆN KIỂU V3 ---
+    private ScrollPane createControlPanel() {
+        VBox panel = new VBox(15);
+        panel.setPadding(new Insets(15));
+        panel.setStyle("-fx-background-color: #1e272e;"); // Nền Dark Mode
+        panel.setPrefWidth(320);
+
+        // Khối 1: CẢNH MÔ PHỎNG
+        VBox secMap = createSection("🗺 CẢNH MÔ PHỎNG");
+        ToggleGroup mapGroup = new ToggleGroup();
+        RadioButton rbNga3 = createRadio("Ngã Ba", mapGroup);
+        RadioButton rbNga4 = createRadio("Ngã Tư", mapGroup);
+        RadioButton rbNga5 = createRadio("Ngã Năm", mapGroup);
+        RadioButton rbGrid = createRadio("Mạng lưới", mapGroup);
+        rbGrid.setSelected(true);
+        mapGroup.selectedToggleProperty().addListener((obs, oldV, newV) -> {
+            if (newV != null) engine.changeMap(((RadioButton)newV).getText());
+        });
+        HBox mapRow1 = new HBox(20, rbNga3, rbNga4);
+        HBox mapRow2 = new HBox(20, rbNga5, rbGrid);
+        secMap.getChildren().addAll(mapRow1, mapRow2);
+
+        // Khối 2: LƯU LƯỢNG & ĐIỀU KHIỂN CHUNG
+        VBox secFlow = createSection("🚦 LƯU LƯỢNG");
+        Label lblSpawn = new Label("Mật độ xe (Ít → Nhiều):");
+        lblSpawn.setTextFill(Color.web("#bdc3c7"));
+        Slider spawnSlider = new Slider(2, 60, 30);
+        spawnSlider.valueProperty().addListener((obs, oldVal, newVal) ->
+                engine.getSpawnSystem().setSpawnDelay(62 - newVal.intValue()));
+
+        CheckBox chkStopSpawn = createCheck("Dừng Spawn Xe", false);
+        chkStopSpawn.setOnAction(e ->
+                engine.getSpawnSystem().setSpawnEnabled(!chkStopSpawn.isSelected()));
+
+        Button btnClear = new Button("🗑 Xóa tất cả xe");
+        btnClear.setMaxWidth(Double.MAX_VALUE);
+        btnClear.setStyle("-fx-background-color: #e74c3c; -fx-text-fill: white;");
+        btnClear.setOnAction(e -> { util.SoundManager.playHorn(); engine.clearAllVehicles(); });
+
+        secFlow.getChildren().addAll(lblSpawn, spawnSlider, chkStopSpawn, btnClear);
+
+        // Khối ĐIỀU KHIỂN (pause + auto lights + police)
+        VBox secCtrl = createSection("🎛 ĐIỀU KHIỂN");
+        Button btnPause = new Button("⏸ Tạm dừng / Tiếp tục");
+        btnPause.setMaxWidth(Double.MAX_VALUE);
+        btnPause.setStyle("-fx-background-color: #ecf0f1; -fx-text-fill: #2c3e50; -fx-font-weight: bold;");
+        btnPause.setOnAction(e -> engine.togglePause());
+
+        ToggleGroup modeGroup = new ToggleGroup();
+        RadioButton rbAuto   = createRadio("Tự động", modeGroup);
+        RadioButton rbManual = createRadio("Thủ công (click đèn)", modeGroup);
+        rbAuto.setSelected(true);
+        modeGroup.selectedToggleProperty().addListener((obs, old, newVal) -> {
+            config.Constants.AUTO_LIGHTS = rbAuto.isSelected();
+        });
+
+        Button btnPolice = new Button("👮 Điều tiết Cảnh sát");
+        btnPolice.setMaxWidth(Double.MAX_VALUE);
+        btnPolice.setStyle("-fx-background-color: #2980b9; -fx-text-fill: white;");
+        btnPolice.setOnAction(e -> engine.togglePoliceMode());
+
+        secCtrl.getChildren().addAll(btnPause,
+                new HBox(20, rbAuto, rbManual), btnPolice);
+
+        // Khối 3: CAMERA ZOOM
+        VBox secZoom = createSection("🔍 ZOOM");
+        HBox zoomControls = new HBox(10);
+        Button btnZoomOut = new Button("Q -");
+        Button btnZoomIn = new Button("Q +");
+        Button btnResetZoom = new Button("Reset");
+        btnZoomOut.setOnAction(e -> engine.zoomCamera(0.8));
+        btnZoomIn.setOnAction(e -> engine.zoomCamera(1.2));
+        btnResetZoom.setOnAction(e -> engine.resetCamera()); // Cần thêm hàm này vào Engine
+        zoomControls.getChildren().addAll(btnZoomOut, btnZoomIn, btnResetZoom);
+        secZoom.getChildren().add(zoomControls);
+        
+        // ---> MỚI: Khối 4: ĐIỀU CHỈNH TỐC ĐỘ (SPEED)
+        VBox secSpeed = createSection("⚡ TỐC ĐỘ CÁC LOẠI XE");
+        secSpeed.getChildren().addAll(
+            createSpeedSlider("Ô tô", val -> config.Constants.SPEED_CAR = val),
+            createSpeedSlider("Xe máy", val -> config.Constants.SPEED_MOTORBIKE = val),
+            createSpeedSlider("Xe đạp", val -> config.Constants.SPEED_BICYCLE = val),
+            createSpeedSlider("Cứu thương", val -> config.Constants.SPEED_AMBULANCE = val),
+            createSpeedSlider("Cứu hỏa", val -> config.Constants.SPEED_FIRETRUCK = val)
+        );
+
+        // Khối 5: CÀI ĐẶT HỆ THỐNG
+        VBox secSettings = createSection("⚙ CÀI ĐẶT HỆ THỐNG");
+        CheckBox chkRain = createCheck("Trời mưa (Đường trơn)", false);
+        chkRain.setOnAction(e -> config.Constants.IS_RAINING = chkRain.isSelected());
+        CheckBox chkMute = createCheck("Tắt Âm thanh", false);
+        chkMute.setOnAction(e -> util.SoundManager.isMuted = chkMute.isSelected());
+        CheckBox chkDebug = createCheck("Bật tia Laser (Debug)", false);
+        chkDebug.setOnAction(e -> engine.setDebugMode(chkDebug.isSelected()));
+        secSettings.getChildren().addAll(chkRain, chkMute, chkDebug);
+
+        // Khối 6: HIỂN THỊ
+        VBox secDisplay = createSection("📺 HIỂN THỊ");
+        ToggleGroup dispGroup = new ToggleGroup();
+        RadioButton rbBasic = createRadio("Basic", dispGroup);
+        RadioButton rbGraphic = createRadio("Đồ họa", dispGroup);
+        rbGraphic.setSelected(true);
+        dispGroup.selectedToggleProperty().addListener((obs, old, newVal) -> {
+            view.VehicleRenderer.BASIC_MODE = ((RadioButton)newVal).getText().equals("Basic");
+        });
+        HBox dispRow = new HBox(20, rbBasic, rbGraphic);
+        secDisplay.getChildren().add(dispRow);
+        // ---> MỚI: Khối 7: THỜI GIAN
+        VBox secTime = createSection("🌗 THỜI GIAN");
+        ComboBox<String> cbTime = new ComboBox<>(javafx.collections.FXCollections.observableArrayList(
+            "Chu kỳ Tự động", "Luôn Ban Ngày", "Luôn Ban Đêm"
+        ));
+        cbTime.setValue("Chu kỳ Tự động");
+        cbTime.setMaxWidth(Double.MAX_VALUE);
+        cbTime.setStyle("-fx-font-size: 13px; -fx-cursor: hand;");
+        cbTime.setOnAction(e -> config.Constants.TIME_MODE = cbTime.getSelectionModel().getSelectedIndex());
+        secTime.getChildren().add(cbTime);
+
+        // ---> MỚI: Khối 8: LOẠI ĐÈN
+        VBox secLightMode = createSection("🚥 LOẠI ĐÈN");
+        ComboBox<String> cbLight = new ComboBox<>(javafx.collections.FXCollections.observableArrayList(
+            "Không đếm số", "Đếm toàn thời gian", "Đếm khi <= 10s"
+        ));
+        cbLight.setValue("Đếm khi <= 10s");
+        cbLight.setMaxWidth(Double.MAX_VALUE);
+        cbLight.setStyle("-fx-font-size: 13px; -fx-cursor: hand;");
+        cbLight.setOnAction(e -> engine.setTrafficLightMode(cbLight.getSelectionModel().getSelectedIndex()));
+        secLightMode.getChildren().add(cbLight);
+        
+        // Đã bổ sung secTime và secLightMode vào danh sách
+        panel.getChildren().addAll(secMap, secFlow, secCtrl, secZoom, secSpeed, secSettings, secDisplay, secTime, secLightMode);
+        ScrollPane scroll = new ScrollPane(panel);
+        scroll.setFitToWidth(true);
+        scroll.setStyle("-fx-background: #1e272e; -fx-border-color: #1e272e;");
+        return scroll;
+    }
+
+    // --- CÁC HÀM TIỆN ÍCH TẠO GIAO DIỆN ---
+    private VBox createSection(String titleStr) {
+        VBox box = new VBox(8);
+        box.setPadding(new Insets(10));
+        box.setStyle("-fx-border-color: #34495e; -fx-border-width: 1; -fx-border-radius: 5;");
+        Label title = new Label(titleStr);
+        title.setFont(Font.font("System", FontWeight.BOLD, 14));
+        title.setTextFill(Color.WHITE);
+        box.getChildren().add(title);
+        return box;
+    }
+
+    private RadioButton createRadio(String text, ToggleGroup group) {
+        RadioButton rb = new RadioButton(text);
+        rb.setToggleGroup(group);
+        rb.setTextFill(Color.web("#bdc3c7"));
+        return rb;
+    }
+
+    private CheckBox createCheck(String text, boolean selected) {
+        CheckBox chk = new CheckBox(text);
+        chk.setSelected(selected);
+        chk.setTextFill(Color.web("#bdc3c7"));
+        return chk;
+    }
+
+    private void setupCameraControls() {
+        javafx.scene.canvas.Canvas canvas = engine.getCanvas();
+        canvas.setCursor(Cursor.HAND);
+        canvas.setOnScroll(event -> {
+            if (event.getDeltaY() > 0) engine.zoomCamera(1.1);
+            else engine.zoomCamera(0.9);
+        });
+        canvas.setOnMousePressed(event -> {
+            lastMouseX = event.getX(); lastMouseY = event.getY();
+            canvas.setCursor(Cursor.CLOSED_HAND);
+        });
+        canvas.setOnMouseDragged(event -> {
+            engine.unlockCamera();
+            engine.moveCamera((event.getX() - lastMouseX) / engine.getZoomScale(), (event.getY() - lastMouseY) / engine.getZoomScale());
+            lastMouseX = event.getX(); lastMouseY = event.getY();
+        });
+        canvas.setOnMouseReleased(event -> canvas.setCursor(Cursor.HAND));
+        canvas.setOnMouseClicked(event -> {
+            boolean isRightClick = event.getButton() == javafx.scene.input.MouseButton.SECONDARY;
+            engine.handleMouseClick(event.getX(), event.getY(), isRightClick);
+        });
+    }
+    // Ném hàm này xuống cuối cùng của file MainView.java
+    private HBox createSpeedSlider(String name, java.util.function.Consumer<Double> action) {
+        Label lbl = new Label(name + ":");
+        lbl.setTextFill(Color.web("#bdc3c7"));
+        lbl.setPrefWidth(90);
+        
+        Slider slider = new Slider(0.1, 3.0, 1.0); // Cho phép chỉnh từ x0.1 (rùa bò) đến x3.0 (bàn thờ)
+        slider.setShowTickMarks(true);
+        slider.setMajorTickUnit(1.0);
+        
+        Label valLbl = new Label("x1.0");
+        valLbl.setTextFill(Color.WHITE);
+        valLbl.setPrefWidth(40);
+        
+        slider.valueProperty().addListener((obs, oldV, newV) -> {
+            // Làm tròn số đến 1 chữ số thập phân
+            double rounded = Math.round(newV.doubleValue() * 10.0) / 10.0;
+            valLbl.setText("x" + rounded);
+            action.accept(rounded); // Gửi giá trị mới cập nhật vào hệ thống
+        });
+        
+        HBox box = new HBox(10, lbl, slider, valLbl);
+        box.setAlignment(Pos.CENTER_LEFT);
+        return box;
+    }
+}
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\view\MapRenderer.java =====
+
+/*
+ * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
+ * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
+ */
+package view;
+
+/**
+ *
+ * @author VINH - PC
+ */
+public class MapRenderer {
+    
+}
+
+
+
+===== FILE: C:\Users\admin\Desktop\code moi\TrafficSimulationFX\src\main\java\view\VehicleRenderer.java =====
+
+package view;
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.effect.BlendMode;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import model.vehicle.*;
+
+public class VehicleRenderer {
+
+    public static boolean BASIC_MODE = false;
+
+    // =====================================================
+    // TẦNG 1: VẼ THÂN XE
+    // =====================================================
+    public static void drawCarBody(GraphicsContext gc, Vehicle v) {
+        gc.save();
+        gc.translate(v.getX(), v.getY());
+        gc.rotate(v.getAngle());
+
+        if (BASIC_MODE) {
+            // --- CHẾ ĐỘ BASIC: Hình chữ nhật màu + nhãn tên ---
+            gc.setFill(v.getColor());
+            gc.fillRect(-v.getWidth() / 2, -v.getHeight() / 2, v.getWidth(), v.getHeight());
+
+            // Viền trắng
+            gc.setStroke(Color.WHITE.deriveColor(0, 1, 1, 0.6));
+            gc.setLineWidth(1);
+            gc.strokeRect(-v.getWidth() / 2, -v.getHeight() / 2, v.getWidth(), v.getHeight());
+
+            // Nhãn loại xe
+            gc.setFill(Color.WHITE);
+            gc.setFont(Font.font("Arial", FontWeight.BOLD, 7));
+            gc.fillText(getVehicleLabel(v), -v.getWidth() / 2 + 2, 3);
+
+        } else {
+            // --- CHẾ ĐỘ ĐỒ HỌA: Render chi tiết ---
+            Color bodyColor = v.getColor();
+
+            // Thân xe (bo góc)
+            gc.setFill(bodyColor);
+            gc.fillRoundRect(-v.getWidth() / 2, -v.getHeight() / 2, v.getWidth(), v.getHeight(), 8, 8);
+
+            // Highlight phía trên (phản quang mái xe)
+            gc.setFill(Color.WHITE.deriveColor(0, 1, 1, 0.18));
+            gc.fillRoundRect(-v.getWidth() / 2 + 1, -v.getHeight() / 2 + 1,
+                    v.getWidth() - 2, v.getHeight() / 2 - 1, 6, 6);
+
+            // Kính lái (màu xanh lam nhạt)
+            gc.setFill(Color.web("#87ceeb", 0.85));
+            gc.fillRoundRect(v.getWidth() / 4 - 2, -v.getHeight() / 2 + 2,
+                    9, v.getHeight() - 4, 3, 3);
+
+            // Kính hậu (nhỏ hơn)
+            gc.setFill(Color.web("#87ceeb", 0.5));
+            gc.fillRect(-v.getWidth() / 2 + 3, -v.getHeight() / 2 + 3,
+                    6, v.getHeight() - 6);
+
+            // Logo chữ thập đỏ cho xe cứu thương & cứu hỏa
+            if (v instanceof EmergencyVehicle) {
+                gc.setFill(Color.RED.deriveColor(0, 1, 1, 0.9));
+                double cx = -v.getWidth() / 6;
+                double cy2 = 0;
+                gc.fillRect(cx - 1.5, -v.getHeight() / 2 + 4, 3, v.getHeight() - 8); // Dọc
+                gc.fillRect(cx - 5, cy2 - 1.5, 10, 3);                                // Ngang
+            }
+
+            // Sọc đỏ xe cứu hỏa
+            if (v instanceof FireTruck) {
+                gc.setFill(Color.WHITE.deriveColor(0, 1, 1, 0.4));
+                gc.fillRect(-v.getWidth() / 2 + 5, -v.getHeight() / 2 + 2, 4, v.getHeight() - 4);
+                gc.fillRect(-v.getWidth() / 2 + 12, -v.getHeight() / 2 + 2, 4, v.getHeight() - 4);
+            }
+
+            // Viền xe (outline)
+            gc.setStroke(bodyColor.darker().darker());
+            gc.setLineWidth(0.8);
+            gc.strokeRoundRect(-v.getWidth() / 2, -v.getHeight() / 2, v.getWidth(), v.getHeight(), 8, 8);
+        }
+
+        gc.restore();
+    }
+
+    // =====================================================
+    // TẦNG 2: VẼ ĐÈN XE (đèn pha, đèn hậu, đèn ưu tiên, hazard)
+    // =====================================================
+    public static void drawLights(GraphicsContext gc, Vehicle v, double darkness) {
+        gc.save();
+        gc.translate(v.getX(), v.getY());
+        gc.rotate(v.getAngle());
+
+        // 1. Đèn pha (headlights) - chỉ bật khi trời tối
+        if (darkness > 0.2) {
+            gc.setGlobalBlendMode(BlendMode.ADD);
+            gc.setFill(Color.rgb(255, 255, 100, 0.4 * darkness));
+            double[] hx = {v.getWidth() / 2, v.getWidth() / 2 + 130, v.getWidth() / 2 + 130};
+            double[] hy = {0, -55, 55};
+            gc.fillPolygon(hx, hy, 3);
+            gc.setGlobalBlendMode(BlendMode.SRC_OVER);
+        }
+
+        // 2. Đèn hậu (taillights) - sáng khi phanh
+        Color tailColor = (v.getSpeed() < 1.0)
+                ? Color.rgb(255, 50, 50, 0.95)
+                : Color.rgb(255, 0, 0, 0.35);
+        gc.setFill(tailColor);
+        gc.fillOval(-v.getWidth() / 2 - 3, -v.getHeight() / 2 + 2, 5, 5);
+        gc.fillOval(-v.getWidth() / 2 - 3, v.getHeight() / 2 - 7, 5, 5);
+
+        // 3. Đèn ưu tiên (đỏ/xanh nháy) cho xe cứu thương & cứu hỏa
+        if (v instanceof EmergencyVehicle) {
+            long t = System.currentTimeMillis();
+            boolean blink = (t % 400) < 200;
+            // Đèn trái
+            gc.setFill(blink ? Color.RED : Color.BLUE);
+            gc.fillOval(-8, -v.getHeight() / 2 - 4, 7, 7);
+            // Đèn phải
+            gc.setFill(blink ? Color.BLUE : Color.RED);
+            gc.fillOval(2, -v.getHeight() / 2 - 4, 7, 7);
+            // Ánh sáng lan toả (additive)
+            if (!BASIC_MODE) {
+                gc.setGlobalBlendMode(BlendMode.ADD);
+                gc.setFill(blink ? Color.rgb(255, 0, 0, 0.15) : Color.rgb(0, 80, 255, 0.15));
+                gc.fillOval(-30, -30, 60, 60);
+                gc.setGlobalBlendMode(BlendMode.SRC_OVER);
+            }
+        }
+
+        // 4. Đèn hazard (hỏng xe - nháy vàng cam 4 góc)
+        if (v.isBroken() && System.currentTimeMillis() % 800 < 400) {
+            gc.setFill(Color.ORANGE);
+            gc.fillOval(-v.getWidth() / 2 - 3, -v.getHeight() / 2 - 3, 7, 7);
+            gc.fillOval(-v.getWidth() / 2 - 3, v.getHeight() / 2 - 4, 7, 7);
+            gc.fillOval(v.getWidth() / 2 - 4, -v.getHeight() / 2 - 3, 7, 7);
+            gc.fillOval(v.getWidth() / 2 - 4, v.getHeight() / 2 - 4, 7, 7);
+        }
+
+        gc.restore();
+    }
+
+    // =====================================================
+    // Trả về nhãn ngắn gọn cho Basic Mode
+    // =====================================================
+    private static String getVehicleLabel(Vehicle v) {
+        if (v instanceof FireTruck)      return "Fire";
+        if (v instanceof EmergencyVehicle) return "Ambu";
+        if (v instanceof Bicycle)        return "Bike";
+        if (v instanceof Motorbike)      return "Moto";
+        return "Car";
+    }
+}
+

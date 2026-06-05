@@ -1,8 +1,9 @@
 package model.vehicle;
 
+import java.util.List;
+
 import javafx.scene.paint.Color;
 import util.TurnType;
-import java.util.List;
 
 public abstract class Vehicle {
     protected double x, y;
@@ -61,14 +62,36 @@ public abstract class Vehicle {
             double dx = target[0] - this.x;
             double dy = target[1] - this.y;
             double dist = Math.hypot(dx, dy);
+
+            double headingRad = Math.atan2(dy, dx);
+            this.angle = Math.toDegrees(headingRad);
+
+            // Chỉ giảm tốc khi có xe sát ngay trước, KHÔNG dừng hẳn
+            double brake = 1.0;
+            double cos = Math.cos(headingRad), sin = Math.sin(headingRad);
+            for (Vehicle o : allVehicles) {
+                if (o == this || o.isBroken()) continue;
+                double ox = o.getX() - this.x;
+                double oy = o.getY() - this.y;
+                double d  = Math.hypot(ox, oy);
+                if (d > 60) continue;
+
+                double ahead = ox * cos + oy * sin;
+                double side  = Math.abs(-ox * sin + oy * cos);
+
+                if (ahead > 0 && ahead < 30 && side < 15) {
+                    brake = Math.min(brake, 0.4); // giảm tốc chứ không dừng
+                }
+            }
+
+            double moveSpeed = speed * brake;
+
             if (dist < 6) {
                 waypointIndex++;
                 if (waypointIndex >= waypoints.size()) clearWaypoints();
             } else {
-                this.angle = Math.toDegrees(Math.atan2(dy, dx));
-                double ar = Math.toRadians(this.angle);
-                this.x += Math.min(speed, dist) * Math.cos(ar);
-                this.y += Math.min(speed, dist) * Math.sin(ar);
+                this.x += Math.min(moveSpeed, dist) * cos;
+                this.y += Math.min(moveSpeed, dist) * sin;
             }
             return;
         }
@@ -102,8 +125,7 @@ public abstract class Vehicle {
         }
         // 3. ĐI THẲNG BÌNH THƯỜNG & PHANH DỰ ĐOÁN
         else {
-            // Radar quét xe phía trước
-            // Radar nhẹ để giảm tốc khi có xe cản trước (CollisionSystem xử lý toàn bộ acceleration)
+            // Radar nhẹ để giảm tốc khi có xe cản trước
             Vehicle frontVehicle = detectVehicleAhead(allVehicles, 100);
             if (frontVehicle != null) {
                 double dist = Math.hypot(frontVehicle.getX() - this.x, frontVehicle.getY() - this.y);
@@ -132,9 +154,8 @@ public abstract class Vehicle {
         for (Vehicle v : allVehicles) {
             if (v == this || v.isBroken()) continue;
             double dist = Math.hypot(v.getX() - this.x, v.getY() - this.y);
-            // Xe phải ở phía trước (khoảng cách nhỏ hơn range) và nằm cùng làn (để tránh quét nhầm làn ngược chiều)
+            // Xe phải ở phía trước (khoảng cách nhỏ hơn range) và nằm cùng làn
             if (dist < range) {
-                // Tính góc tương đối để chắc chắn xe kia đang ở trước mặt
                 double angleToTarget = Math.toDegrees(Math.atan2(v.getY() - this.y, v.getX() - this.x));
                 double angleDiff = Math.abs((angleToTarget - this.angle + 360) % 360);
                 if (angleDiff < 45 || angleDiff > 315) return v;

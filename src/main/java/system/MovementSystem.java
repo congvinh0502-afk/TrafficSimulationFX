@@ -3,6 +3,7 @@ package system;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+
 import model.map.CityMap;
 import model.map.IntersectionNode;
 import model.map.RoadEdge;
@@ -19,7 +20,11 @@ public class MovementSystem {
             for (IntersectionNode node : cityMap.getNodes()) {
                 if (node.isSpawnNode()) continue;
                 double dist = Math.hypot(v.getX() - node.getX(), v.getY() - node.getY());
-                if (dist < 75) {
+
+                // Vòng xuyến (FIVE_WAY) trigger ở khoảng cách 100, ngã thường trigger ở 75
+                double threshold = (node.getType() == IntersectionNode.NodeType.FIVE_WAY) ? 100 : 75;
+
+                if (dist < threshold) {
                     startTurning(v, node, cityMap);
                     break;
                 }
@@ -102,127 +107,113 @@ public class MovementSystem {
     }
 
     // ============================================================
-    // ROUNDABOUT: Tính waypoints ôm theo vòng xuyến
-    //
-    // Xe đi theo luật giao thông VN (đường phải):
-    //   vào vòng → rẽ phải dọc theo vành ngoài → thoát ra cánh mong muốn
-    //
-    // Thứ tự CCW trên màn hình (Y-down): W → S → E → N → W
-    //   ring[0]=West, ring[1]=South, ring[2]=East, ring[3]=North
+    // ROUNDABOUT: Tính waypoints ôm theo vòng xuyến theo góc thực
     // ============================================================
     private void computeRoundaboutWaypoints(Vehicle v, IntersectionNode node, CityMap cityMap) {
         double cx = node.getX(), cy = node.getY();
-        double R   = 62;   // Bán kính làn vòng xuyến (> đảo cỏ 40px)
-        double off = 15;   // Offset làn phải cố định
+        double R   = 62;  // bán kính làn vòng xuyến
+        double off = 15;  // offset làn phải
 
-        // Hướng xe đang đi (0=Đông,1=Nam,2=Tây,3=Bắc)
-        int entryDir = (int) Math.round(v.getAngle() / 90.0) % 4;
-        if (entryDir < 0) entryDir += 4;
+        // 5 nhánh góc thực, khớp với branchAngles[] trong IntersectionLayout
+        double[] branchAngles = { 270, 342, 54, 126, 198 };
 
-        // Tìm các cánh exit hợp lệ
-        boolean[] hasExit = new boolean[4];
+        // Tìm nhánh xe đang đi vào (góc gần nhất với hướng xe)
+        double vAngle = v.getAngle() % 360;
+        if (vAngle < 0) vAngle += 360;
+
+        int entryBranch = 0;
+        double bestDiff = Double.MAX_VALUE;
+        for (int i = 0; i < branchAngles.length; i++) {
+            double diff = Math.abs(vAngle - branchAngles[i]) % 360;
+            if (diff > 180) diff = 360 - diff;
+            if (diff < bestDiff) { bestDiff = diff; entryBranch = i; }
+        }
+
+        // Tìm các nhánh exit hợp lệ (có đường thực sự kết nối)
+        // Tính góc từ center đến từng neighbor để khớp với branchAngles[]
+        boolean[] hasExit = new boolean[5];
         for (RoadEdge road : cityMap.getRoads()) {
             IntersectionNode nb = null;
             if (road.getStartNode() == node) nb = road.getEndNode();
             else if (road.getEndNode() == node) nb = road.getStartNode();
             if (nb == null) continue;
-            double dx = nb.getX() - cx, dy = nb.getY() - cy;
-            if (Math.abs(dx) > Math.abs(dy)) {
-                if (dx > 0) hasExit[0] = true; else hasExit[2] = true;
-            } else {
-                if (dy > 0) hasExit[1] = true; else hasExit[3] = true;
+
+            double dx = nb.getX() - cx;
+            double dy = nb.getY() - cy;
+            double a  = Math.toDegrees(Math.atan2(dy, dx)) % 360;
+            if (a < 0) a += 360;
+
+            // Gắn neighbor vào nhánh gần nhất (tolerance 30°)
+            for (int i = 0; i < branchAngles.length; i++) {
+                double diff = Math.abs(a - branchAngles[i]) % 360;
+                if (diff > 180) diff = 360 - diff;
+                if (diff < 30) { hasExit[i] = true; break; }
             }
         }
 
-        // Chọn exit ngẫu nhiên (không U-turn = opposite dir)
+        // Chọn exit ngẫu nhiên — không U-turn (nhánh đối diện ~180°)
         List<Integer> exits = new ArrayList<>();
-        for (int d = 0; d < 4; d++) {
-            if (d == (entryDir + 2) % 4) continue; // bỏ U-turn
-            if (hasExit[d]) exits.add(d);
-        }
-        if (exits.isEmpty()) {
-            // Fallback: tiếp tục thẳng
-            exits.add(entryDir);
-        }
-        int exitDir = exits.get(random.nextInt(exits.size()));
+        for (int i = 0; i < branchAngles.length; i++) {
+            if (i == entryBranch) continue; // không quay đầu lại
 
-        // --- Điểm entry/exit trên vành vòng xuyến (có offset làn) ---
-        // Entry: Xe đến từ phía nào thì điểm entry nằm ở phía đó của ring
-        double[] entryPt = ringEntryPoint(cx, cy, R, off, entryDir);
-        double[] exitPt  = ringExitPoint(cx, cy, R, off, exitDir);
+            // Bỏ nhánh đối diện hoàn toàn (diff ~180°)
+            double diff = Math.abs(branchAngles[i] - branchAngles[entryBranch]) % 360;
+            if (diff > 180) diff = 360 - diff;
+            if (diff > 150) continue; // U-turn
 
-        // --- Các điểm ring trung gian (CCW: W→S→E→N→W) ---
-        // ring[0]=West, ring[1]=South, ring[2]=East, ring[3]=North
-        double[][] ringPts = {
-            {cx - R, cy},   // 0: West
-            {cx, cy + R},   // 1: South
-            {cx + R, cy},   // 2: East
-            {cx, cy - R},   // 3: North
+            if (hasExit[i]) exits.add(i);
+        }
+
+        if (exits.isEmpty()) exits.add(entryBranch); // fallback
+        int exitBranch = exits.get(random.nextInt(exits.size()));
+
+        // --- Tính điểm entry/exit trên vành ring ---
+        // Xe đi VÀO từ nhánh entryBranch: điểm entry nằm ở phía nhánh đó
+        // Offset lệch 90° CW (làn phải theo chiều xe đi)
+        double entryAngleRad = Math.toRadians(branchAngles[entryBranch]);
+        double entryPerpRad  = entryAngleRad - Math.PI / 2; // CW 90°
+        double[] entryPt = {
+            cx + Math.cos(entryAngleRad) * R + Math.cos(entryPerpRad) * off,
+            cy + Math.sin(entryAngleRad) * R + Math.sin(entryPerpRad) * off
         };
 
-        // Vị trí của entryDir trên vòng CCW
-        int[] entryRingPos = {0, 3, 2, 1}; // dir→ ring position (dir=0/East→pos0/West,...)
-        int[] exitRingPos  = {2, 1, 0, 3}; // dir→ ring position (dir=0/East→pos2/East,...)
-        int ePos = entryRingPos[entryDir];
-        int xPos = exitRingPos[exitDir];
+        double exitAngleRad = Math.toRadians(branchAngles[exitBranch]);
+        double exitPerpRad  = exitAngleRad + Math.PI / 2; // CCW 90° (ra đúng làn)
+        double[] exitPt = {
+            cx + Math.cos(exitAngleRad) * R + Math.cos(exitPerpRad) * off,
+            cy + Math.sin(exitAngleRad) * R + Math.sin(exitPerpRad) * off
+        };
+
+        // --- Điểm ring trung gian: đi CCW từ entry → exit ---
+        // Tính góc thực của entryPt và exitPt trên vành ring
+        double entryTheta = Math.atan2(entryPt[1] - cy, entryPt[0] - cx);
+        double exitTheta  = Math.atan2(exitPt[1]  - cy, exitPt[0]  - cx);
+
+        // Normalize để đi CCW (tăng dần góc)
+        if (exitTheta <= entryTheta) exitTheta += 2 * Math.PI;
 
         List<double[]> waypoints = new ArrayList<>();
         waypoints.add(entryPt);
 
-        // Duyệt CCW từ ePos+1 đến xPos
-        int pos = (ePos + 1) % 4;
-        int maxSteps = 4;
-        while (pos != xPos && maxSteps-- > 0) {
-            waypoints.add(ringPts[pos]);
-            pos = (pos + 1) % 4;
-        }
-
-        // Nếu không có điểm trung gian (góc gần), thêm 1 điểm giữa để mượt hơn
-        if (waypoints.size() == 1) {
-            double midAngle = Math.atan2((entryPt[1] + exitPt[1]) / 2 - cy,
-                                         (entryPt[0] + exitPt[0]) / 2 - cx);
-            waypoints.add(new double[]{cx + R * Math.cos(midAngle), cy + R * Math.sin(midAngle)});
+        // Thêm điểm trung gian mỗi ~90° thay vì 45°
+        double theta = entryTheta + Math.PI / 2;
+        while (theta < exitTheta - Math.PI / 4) {
+            waypoints.add(new double[]{
+                cx + R * Math.cos(theta),
+                cy + R * Math.sin(theta)
+            });
+            theta += Math.PI / 2;
         }
 
         waypoints.add(exitPt);
 
-        // Điểm cuối xa trên đường ra (đủ xa để xe thoát khỏi ring)
-        double[] roadEnd = roadExitPoint(cx, cy, R + 90, exitDir, off);
+        // Điểm thoát xa trên đường ra (đủ để xe rời ring)
+        double[] roadEnd = {
+            cx + Math.cos(exitAngleRad) * (R + 90) + Math.cos(exitPerpRad) * off,
+            cy + Math.sin(exitAngleRad) * (R + 90) + Math.sin(exitPerpRad) * off
+        };
         waypoints.add(roadEnd);
 
         v.setWaypoints(waypoints);
-    }
-
-    /** Điểm xe VÀO ring: bên phải (right-hand traffic) của cánh entry */
-    private double[] ringEntryPoint(double cx, double cy, double R, double off, int dir) {
-        return switch (dir) {
-            case 0 -> new double[]{cx - R, cy + off}; // Đến từ W, đi Đông → lane Nam
-            case 1 -> new double[]{cx - off, cy - R}; // Đến từ N, đi Nam  → lane Tây
-            case 2 -> new double[]{cx + R, cy - off}; // Đến từ E, đi Tây  → lane Bắc
-            case 3 -> new double[]{cx + off, cy + R}; // Đến từ S, đi Bắc  → lane Đông
-            default -> new double[]{cx, cy};
-        };
-    }
-
-    /** Điểm xe RA ring: bên phải của cánh exit */
-    private double[] ringExitPoint(double cx, double cy, double R, double off, int dir) {
-        return switch (dir) {
-            case 0 -> new double[]{cx + R, cy + off}; // Ra Đông  → lane Nam
-            case 1 -> new double[]{cx - off, cy + R}; // Ra Nam   → lane Tây
-            case 2 -> new double[]{cx - R, cy - off}; // Ra Tây   → lane Bắc
-            case 3 -> new double[]{cx + off, cy - R}; // Ra Bắc   → lane Đông
-            default -> new double[]{cx, cy};
-        };
-    }
-
-    /** Điểm trên đường ra, đủ xa khỏi ring để xe tiếp tục đi thẳng */
-    private double[] roadExitPoint(double cx, double cy, double dist, int dir, double off) {
-        return switch (dir) {
-            case 0 -> new double[]{cx + dist, cy + off};
-            case 1 -> new double[]{cx - off, cy + dist};
-            case 2 -> new double[]{cx - dist, cy - off};
-            case 3 -> new double[]{cx + off, cy - dist};
-            default -> new double[]{cx, cy};
-        };
     }
 }

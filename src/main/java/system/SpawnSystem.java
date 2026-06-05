@@ -1,26 +1,35 @@
 package system;
 
-import config.Constants;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+
 import model.map.CityMap;
 import model.map.RoadEdge;
-import model.vehicle.*;
+import model.vehicle.Bicycle;
+import model.vehicle.Car;
+import model.vehicle.EmergencyVehicle;
+import model.vehicle.FireTruck;
+import model.vehicle.Motorbike;
+import model.vehicle.Vehicle;
 
 public class SpawnSystem {
     private Random random = new Random();
-    private int spawnDelay = 20;
+    private int spawnDelay = 600; // Tăng từ 20 -> 600 (spawn thưa hơn 3x)
+    private int maxVehicles = 30; // Giới hạn tổng số xe trên map
     private boolean spawnEnabled = true;
     private int totalFrames = 0;
     private static final int EMERGENCY_UNLOCK_FRAMES = 480; // ~8 giây ở 60fps
 
     public void setSpawnDelay(int delay) { this.spawnDelay = delay; }
     public void setSpawnEnabled(boolean enabled) { this.spawnEnabled = enabled; }
+    public void setMaxVehicles(int max) { this.maxVehicles = max; } // Thêm setter
     public void resetTimer() { totalFrames = 0; } // Gọi khi đổi map
 
     public void spawnRandom(List<Vehicle> vehicles, CityMap cityMap) {
         if (!spawnEnabled) return;
+        if (vehicles.size() >= maxVehicles) return; // Chặn spawn khi đã đủ xe
+
         totalFrames++;
         int currentDelay = Math.max(1, spawnDelay);
         if (random.nextInt(currentDelay) != 0) return;

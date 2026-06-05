@@ -5,7 +5,11 @@ import javafx.scene.effect.BlendMode;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
-import model.vehicle.*;
+import model.vehicle.Bicycle;
+import model.vehicle.EmergencyVehicle;
+import model.vehicle.FireTruck;
+import model.vehicle.Motorbike;
+import model.vehicle.Vehicle;
 
 public class VehicleRenderer {
 
@@ -91,11 +95,14 @@ public class VehicleRenderer {
         gc.rotate(v.getAngle());
 
         // 1. Đèn pha (headlights) - chỉ bật khi trời tối
+
         if (darkness > 0.2) {
             gc.setGlobalBlendMode(BlendMode.ADD);
             gc.setFill(Color.rgb(255, 255, 100, 0.4 * darkness));
-            double[] hx = {v.getWidth() / 2, v.getWidth() / 2 + 130, v.getWidth() / 2 + 130};
-            double[] hy = {0, -55, 55};
+            double len    = v.getWidth() * 1.1; // chiều dài chùm sáng (cũ: 130 cố định)
+            double spread = v.getHeight() * 0.8; // độ loe 2 bên (cũ: 55 cố định)
+            double[] hx = {v.getWidth() / 2, v.getWidth() / 2 + len, v.getWidth() / 2 + len};
+            double[] hy = {0, -spread, spread};
             gc.fillPolygon(hx, hy, 3);
             gc.setGlobalBlendMode(BlendMode.SRC_OVER);
         }

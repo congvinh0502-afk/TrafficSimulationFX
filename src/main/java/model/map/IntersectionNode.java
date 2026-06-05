@@ -13,17 +13,27 @@ public class IntersectionNode {
     private LightMode lightMode  = LightMode.SMART_COUNTDOWN;
     private boolean   isSpawnNode = false;
 
-    // 4 đèn cardinal + 1 đèn NW (chỉ dùng cho FIVE_WAY)
+    // Đèn cho THREE_WAY / FOUR_WAY
     private TrafficLight lightNorth = new TrafficLight(Phase.GREEN);
     private TrafficLight lightSouth = new TrafficLight(Phase.GREEN);
     private TrafficLight lightEast  = new TrafficLight(Phase.RED);
     private TrafficLight lightWest  = new TrafficLight(Phase.RED);
-    private TrafficLight lightNW    = new TrafficLight(Phase.RED);
 
-    // Các hướng có đường thực sự kết nối (được set bởi CityMap sau khi build)
-    private boolean hasNorth, hasSouth, hasEast, hasWest, hasNW;
+    // Đèn cho FIVE_WAY — 5 nhánh theo góc thực tế trong IntersectionLayout
+    // Thứ tự khớp với branchAngles[] = {270, 342, 54, 126, 198}
+    private TrafficLight light270 = new TrafficLight(Phase.GREEN); // nhánh 0 (SOUTH inbound)
+    private TrafficLight light342 = new TrafficLight(Phase.RED);   // nhánh 1 (FW_IN_342)
+    private TrafficLight light54  = new TrafficLight(Phase.RED);   // nhánh 2 (FW_IN_54)
+    private TrafficLight light126 = new TrafficLight(Phase.RED);   // nhánh 3 (FW_IN_126)
+    private TrafficLight light198 = new TrafficLight(Phase.RED);   // nhánh 4 (FW_IN_198)
 
-    private double phaseTimer  = 0;
+    // Hướng kết nối cho THREE_WAY / FOUR_WAY
+    private boolean hasNorth, hasSouth, hasEast, hasWest;
+
+    // Hướng kết nối cho FIVE_WAY (tương ứng 5 nhánh góc)
+    private boolean has270, has342, has54, has126, has198;
+
+    private double phaseTimer   = 0;
     private int    currentPhase = 0;
 
     private static final double GREEN_DURATION  = 15.0;
@@ -41,10 +51,28 @@ public class IntersectionNode {
         this.isSpawnNode = isSpawnNode;
     }
 
-    // -------- Direction setup (gọi bởi CityMap) --------
+    // -------- Direction setup --------
 
-    public void setConnectedDirections(boolean n, boolean s, boolean e, boolean w, boolean nw) {
-        hasNorth = n; hasSouth = s; hasEast = e; hasWest = w; hasNW = nw;
+    /**
+     * Gọi bởi CityMap cho THREE_WAY / FOUR_WAY.
+     * Với FIVE_WAY hãy dùng setConnectedDirectionsFiveWay().
+     */
+    public void setConnectedDirections(boolean n, boolean s, boolean e, boolean w) {
+        hasNorth = n; hasSouth = s; hasEast = e; hasWest = w;
+        phaseTimer   = 0;
+        currentPhase = 0;
+        applyPhaseStates();
+    }
+
+    /**
+     * Gọi bởi CityMap cho FIVE_WAY.
+     * Thứ tự tham số khớp với branchAngles[] = {270, 342, 54, 126, 198}.
+     */
+    public void setConnectedDirectionsFiveWay(
+            boolean b270, boolean b342, boolean b54,
+            boolean b126, boolean b198) {
+        has270 = b270; has342 = b342; has54 = b54;
+        has126 = b126; has198 = b198;
         phaseTimer   = 0;
         currentPhase = 0;
         applyPhaseStates();
@@ -59,7 +87,7 @@ public class IntersectionNode {
         phaseTimer += dt;
 
         if (type == NodeType.FIVE_WAY) {
-            // FIVE_WAY: 5 pha xoay vòng, mỗi pha = GREEN_DURATION
+            // 5 pha xoay vòng, mỗi pha = GREEN_DURATION
             if (phaseTimer >= GREEN_DURATION) {
                 phaseTimer   = 0;
                 currentPhase = (currentPhase + 1) % 5;
@@ -99,19 +127,24 @@ public class IntersectionNode {
         }
     }
 
+    /**
+     * Mỗi pha: đúng 1 nhánh GREEN, 4 nhánh còn lại RED.
+     * Thứ tự pha khớp với branchAngles[] trong IntersectionLayout:
+     *   pha 0 → 270° (light270)
+     *   pha 1 → 342° (light342)
+     *   pha 2 →  54° (light54)
+     *   pha 3 → 126° (light126)
+     *   pha 4 → 198° (light198)
+     */
     private void applyFiveWayPhase() {
-        // Mỗi pha: 1 cánh được GREEN, 4 cánh còn lại RED
-        // Thứ tự: 0=West, 1=East, 2=North, 3=South, 4=NW
-        lightWest .setPhase(currentPhase == 0 ? Phase.GREEN : Phase.RED);
-        lightEast .setPhase(currentPhase == 1 ? Phase.GREEN : Phase.RED);
-        lightNorth.setPhase(currentPhase == 2 ? Phase.GREEN : Phase.RED);
-        lightSouth.setPhase(currentPhase == 3 ? Phase.GREEN : Phase.RED);
-        lightNW   .setPhase(currentPhase == 4 ? Phase.GREEN : Phase.RED);
+        light270.setPhase((currentPhase == 0 && has270) ? Phase.GREEN : Phase.RED);
+        light342.setPhase((currentPhase == 1 && has342) ? Phase.GREEN : Phase.RED);
+        light54 .setPhase((currentPhase == 2 && has54)  ? Phase.GREEN : Phase.RED);
+        light126.setPhase((currentPhase == 3 && has126) ? Phase.GREEN : Phase.RED);
+        light198.setPhase((currentPhase == 4 && has198) ? Phase.GREEN : Phase.RED);
     }
 
     private void applyThreeWayPhase() {
-        // Pha 0/1: E+W green/yellow (luồng ngang)
-        // Pha 2/3: N or S green/yellow (cánh dọc còn lại)
         boolean vertArm = hasNorth || hasSouth;
         switch (currentPhase) {
             case 0 -> {
@@ -157,16 +190,29 @@ public class IntersectionNode {
     // -------- Getters --------
 
     public boolean isSpawnNode()    { return isSpawnNode; }
+
+    // THREE_WAY / FOUR_WAY
     public boolean isHasNorth()     { return hasNorth; }
     public boolean isHasSouth()     { return hasSouth; }
     public boolean isHasEast()      { return hasEast; }
     public boolean isHasWest()      { return hasWest; }
-    public boolean isHasNW()        { return hasNW; }
     public TrafficLight getLightNorth() { return lightNorth; }
     public TrafficLight getLightSouth() { return lightSouth; }
     public TrafficLight getLightEast()  { return lightEast; }
     public TrafficLight getLightWest()  { return lightWest; }
-    public TrafficLight getLightNW()    { return lightNW; }
+
+    // FIVE_WAY — 5 nhánh góc thực
+    public boolean isHas270() { return has270; }
+    public boolean isHas342() { return has342; }
+    public boolean isHas54()  { return has54;  }
+    public boolean isHas126() { return has126; }
+    public boolean isHas198() { return has198; }
+    public TrafficLight getLight270() { return light270; }
+    public TrafficLight getLight342() { return light342; }
+    public TrafficLight getLight54()  { return light54;  }
+    public TrafficLight getLight126() { return light126; }
+    public TrafficLight getLight198() { return light198; }
+
     public String    getId()        { return id; }
     public double    getX()         { return x; }
     public double    getY()         { return y; }

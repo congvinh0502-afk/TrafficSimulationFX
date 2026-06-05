@@ -1,5 +1,8 @@
 package engine;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import config.Constants;
 import javafx.animation.AnimationTimer;
 import javafx.scene.canvas.Canvas;
@@ -9,13 +12,11 @@ import javafx.scene.shape.StrokeLineCap;
 import model.map.CityMap;
 import model.map.IntersectionNode;
 import model.map.RoadEdge;
-import java.util.ArrayList;
-import java.util.List;
 import model.traffic.TrafficLight;
 import model.vehicle.Vehicle;
+import system.CollisionSystem;
 import system.MovementSystem;
 import system.SpawnSystem;
-import system.CollisionSystem;
 import system.TrafficRuleSystem;
 import view.VehicleRenderer;
 
@@ -320,16 +321,12 @@ public class SimulationEngine extends AnimationTimer {
                 gc.setLineDashes(null);
 
                 // b. Vạch dừng chờ đèn đỏ - bên tay PHẢI của từng chiều xe chạy
-                // Xe đi Nam (xuống): làn phải = Tây (x < nX)
-                // Xe đi Bắc (lên):  làn phải = Đông (x > nX)
-                // Xe đi Tây:        làn phải = Bắc (y < nY)
-                // Xe đi Đông:       làn phải = Nam (y > nY)
                 gc.setStroke(Color.WHITE);
                 gc.setLineWidth(3);
-                if (hasNorth) gc.strokeLine(nX - halfW, nY - halfW - 5, nX, nY - halfW - 5); // Tây nửa → xe đi Nam
-                if (hasSouth) gc.strokeLine(nX, nY + halfW + 5, nX + halfW, nY + halfW + 5); // Đông nửa → xe đi Bắc
-                if (hasWest)  gc.strokeLine(nX - halfW - 5, nY, nX - halfW - 5, nY + halfW); // Nam nửa → xe đi Đông
-                if (hasEast)  gc.strokeLine(nX + halfW + 5, nY - halfW, nX + halfW + 5, nY); // Bắc nửa → xe đi Tây
+                if (hasNorth) gc.strokeLine(nX - halfW, nY - halfW - 5, nX, nY - halfW - 5); 
+                if (hasSouth) gc.strokeLine(nX, nY + halfW + 5, nX + halfW, nY + halfW + 5); 
+                if (hasWest)  gc.strokeLine(nX - halfW - 5, nY, nX - halfW - 5, nY + halfW); 
+                if (hasEast)  gc.strokeLine(nX + halfW + 5, nY - halfW, nX + halfW + 5, nY); 
 
                 // c. Vạch dẫn hướng ôm cua (Guide Arcs) - vàng mờ
                 gc.setStroke(Color.rgb(241, 196, 15, 0.4));
@@ -365,19 +362,27 @@ public class SimulationEngine extends AnimationTimer {
             VehicleRenderer.drawLights(gc, v, darkness);
         }
 
-        // TẦNG 5: VẼ ĐÈN GIAO THÔNG (chỉ vẽ ở hướng có đường)
+        // TẦNG 5: VẼ ĐÈN GIAO THÔNG
         for (IntersectionNode node : cityMap.getNodes()) {
             if (node.isSpawnNode()) continue;
             double nX = node.getX(), nY = node.getY();
             double off = Constants.ROAD_WIDTH / 2 + 8; // khoảng cách từ tâm đến trụ đèn
 
             if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
-                // 5 đèn: N, S, E, W + NW diagonal
-                drawTrafficLight(gc, node.getLightNorth(), nX,        nY - off - 10);
-                drawTrafficLight(gc, node.getLightSouth(), nX,        nY + off);
-                drawTrafficLight(gc, node.getLightEast(),  nX + off,  nY);
-                drawTrafficLight(gc, node.getLightWest(),  nX - off - 20, nY);
-                drawTrafficLight(gc, node.getLightNW(),    nX - off,  nY - off);
+                // 5 đèn đặt theo đúng branchAngles[] = {270, 342, 54, 126, 198}
+                // Mỗi đèn đặt tại rìa roundabout (off) theo hướng của nhánh đó
+                double lightDist = off + 10;
+                double[][] fwAngles = { {270}, {342}, {54}, {126}, {198} };
+                TrafficLight[] fwLights = {
+                    node.getLight270(), node.getLight342(), node.getLight54(),
+                    node.getLight126(), node.getLight198()
+                };
+                for (int i = 0; i < 5; i++) {
+                    double rad = Math.toRadians(fwAngles[i][0]);
+                    double lx  = nX + Math.cos(rad) * lightDist - 8; // -8 để căn giữa hộp đèn 16px
+                    double ly  = nY + Math.sin(rad) * lightDist - 11;
+                    drawTrafficLight(gc, fwLights[i], lx, ly);
+                }
             } else {
                 // Chỉ vẽ đèn ở hướng có đường thực sự
                 if (node.isHasNorth()) drawTrafficLight(gc, node.getLightNorth(), nX - 12, nY - off - 10);
