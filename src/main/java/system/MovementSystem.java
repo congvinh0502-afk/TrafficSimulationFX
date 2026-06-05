@@ -12,6 +12,15 @@ import util.TurnType;
 public class MovementSystem {
     private Random random = new Random();
 
+    // ===== Tham số vòng xuyến =====
+    private static final double RING_RADIUS  = 62;   // bán kính làn chạy (> đảo cỏ 40, < nền nhựa 100)
+    private static final double LANE_OFF     = 15;   // độ lệch làn phải
+    private static final double WP_STEP_RAD  = Math.toRadians(10); // mật độ waypoint: 10°/điểm → cong mượt
+    private static final double TRIGGER_5WAY = 150;  // khoảng cách bắt đầu bám vòng xuyến (< vạch dừng ~190)
+    private static final double TRIGGER_OTHER = 75;
+    private static final double EXIT_DIST    = RING_RADIUS + 120; // điểm cuối PHẢI > TRIGGER_5WAY
+                                                                  // để xe vừa thoát không bị kích hoạt lại
+
     public void updatePositions(List<Vehicle> vehicles, CityMap cityMap) {
         for (Vehicle v : vehicles) {
             if (v.isBroken() || v.isTurning() || v.hasWaypoints()) continue;
@@ -19,12 +28,31 @@ public class MovementSystem {
             for (IntersectionNode node : cityMap.getNodes()) {
                 if (node.isSpawnNode()) continue;
                 double dist = Math.hypot(v.getX() - node.getX(), v.getY() - node.getY());
-                if (dist < 75) {
+
+                boolean isFiveWay = node.getType() == IntersectionNode.NodeType.FIVE_WAY;
+                double trigger = isFiveWay ? TRIGGER_5WAY : TRIGGER_OTHER;
+
+                if (dist < trigger) {
+                    // NHƯỜNG ĐƯỜNG: nếu ngay cửa vào đang có xe chạy trong vòng xuyến → chờ
+                    if (isFiveWay && ringBusyNear(v, vehicles)) {
+                        v.setSpeed(Math.max(0, v.getSpeed() - 0.25));
+                        break; // chưa cấp waypoint, frame sau kiểm tra lại
+                    }
                     startTurning(v, node, cityMap);
                     break;
                 }
             }
         }
+    }
+
+    /** Có xe nào đang lưu thông trong vòng xuyến ở gần cửa vào của v không? */
+    private boolean ringBusyNear(Vehicle v, List<Vehicle> vehicles) {
+        for (Vehicle other : vehicles) {
+            if (other == v || !other.hasWaypoints()) continue;
+            double d = Math.hypot(other.getX() - v.getX(), other.getY() - v.getY());
+            if (d < 80) return true;
+        }
+        return false;
     }
 
     private void startTurning(Vehicle v, IntersectionNode node, CityMap cityMap) {
@@ -38,7 +66,7 @@ public class MovementSystem {
         }
 
         // ============================================================
-        // Ngã thường: Bezier
+        // Ngã thường: Bezier (GIỮ NGUYÊN)
         // ============================================================
 
         // Bước A: Quét Radar tìm đường
@@ -102,127 +130,82 @@ public class MovementSystem {
     }
 
     // ============================================================
-    // ROUNDABOUT: Tính waypoints ôm theo vòng xuyến
+    // ROUNDABOUT (PHIÊN BẢN MỚI): Sinh waypoint DÀY theo CUNG TRÒN
     //
-    // Xe đi theo luật giao thông VN (đường phải):
-    //   vào vòng → rẽ phải dọc theo vành ngoài → thoát ra cánh mong muốn
+    // Khác bản cũ:
+    //  - Không dùng 4 hướng cứng (E/S/W/N) nữa → cánh chéo Tây-Bắc
+    //    được xử lý tự nhiên như mọi cánh khác (theo vector).
+    //  - Thay vì 4 điểm cách nhau 90° (xe đi gãy khúc), sinh điểm
+    //    mỗi 10° dọc cung tròn → xe ôm cua tròn thật sự.
     //
-    // Thứ tự CCW trên màn hình (Y-down): W → S → E → N → W
-    //   ring[0]=West, ring[1]=South, ring[2]=East, ring[3]=North
+    // Chiều lưu thông (luật VN, màn hình Y-down): GÓC GIẢM DẦN
+    //   W(180°) → S(90°) → E(0°) → N(-90°) → NW(-135°) → W ...
     // ============================================================
     private void computeRoundaboutWaypoints(Vehicle v, IntersectionNode node, CityMap cityMap) {
         double cx = node.getX(), cy = node.getY();
-        double R   = 62;   // Bán kính làn vòng xuyến (> đảo cỏ 40px)
-        double off = 15;   // Offset làn phải cố định
+        double R   = RING_RADIUS;
+        double off = LANE_OFF;
 
-        // Hướng xe đang đi (0=Đông,1=Nam,2=Tây,3=Bắc)
-        int entryDir = (int) Math.round(v.getAngle() / 90.0) % 4;
-        if (entryDir < 0) entryDir += 4;
-
-        // Tìm các cánh exit hợp lệ
-        boolean[] hasExit = new boolean[4];
+        // --- 1. Gom các cánh nối vào node dưới dạng VECTOR đơn vị (tâm → ngoài) ---
+        List<double[]> arms = new ArrayList<>();
         for (RoadEdge road : cityMap.getRoads()) {
             IntersectionNode nb = null;
             if (road.getStartNode() == node) nb = road.getEndNode();
             else if (road.getEndNode() == node) nb = road.getStartNode();
             if (nb == null) continue;
             double dx = nb.getX() - cx, dy = nb.getY() - cy;
-            if (Math.abs(dx) > Math.abs(dy)) {
-                if (dx > 0) hasExit[0] = true; else hasExit[2] = true;
-            } else {
-                if (dy > 0) hasExit[1] = true; else hasExit[3] = true;
+            double len = Math.hypot(dx, dy);
+            if (len < 1) continue;
+            double ux = dx / len, uy = dy / len;
+            // bỏ trùng lặp (đường 2 chiều của cùng 1 cánh)
+            boolean dup = false;
+            for (double[] a : arms) {
+                if (a[0] * ux + a[1] * uy > 0.95) { dup = true; break; }
             }
+            if (!dup) arms.add(new double[]{ux, uy});
+        }
+        if (arms.isEmpty()) return;
+
+        // --- 2. Cánh ENTRY = cánh ngược với hướng xe đang chạy ---
+        double hRad = Math.toRadians(v.getAngle());
+        double hx = Math.cos(hRad), hy = Math.sin(hRad);
+        double[] entryArm = arms.get(0);
+        double best = -2;
+        for (double[] a : arms) {
+            double dot = -(a[0] * hx + a[1] * hy); // càng ngược hướng chạy càng lớn
+            if (dot > best) { best = dot; entryArm = a; }
         }
 
-        // Chọn exit ngẫu nhiên (không U-turn = opposite dir)
-        List<Integer> exits = new ArrayList<>();
-        for (int d = 0; d < 4; d++) {
-            if (d == (entryDir + 2) % 4) continue; // bỏ U-turn
-            if (hasExit[d]) exits.add(d);
+        // --- 3. Chọn cánh EXIT ngẫu nhiên (loại cánh entry = cấm quay đầu) ---
+        List<double[]> exitCandidates = new ArrayList<>();
+        for (double[] a : arms) if (a != entryArm) exitCandidates.add(a);
+        double[] exitArm = exitCandidates.isEmpty()
+                ? entryArm
+                : exitCandidates.get(random.nextInt(exitCandidates.size()));
+
+        // --- 4. Góc entry/exit trên vành (lệch về làn phải) ---
+        double laneShift = Math.atan2(off, R); // ~13.6°
+        double aEntry = Math.atan2(entryArm[1], entryArm[0]) - laneShift;
+        double aExit  = Math.atan2(exitArm[1],  exitArm[0])  + laneShift;
+
+        // chuẩn hoá: lưu thông theo chiều GIẢM góc → cần aExit < aEntry
+        while (aExit >= aEntry) aExit -= 2 * Math.PI;
+
+        // --- 5. Sinh waypoint dày dọc cung tròn ---
+        List<double[]> wps = new ArrayList<>();
+        for (double a = aEntry; a > aExit; a -= WP_STEP_RAD) {
+            wps.add(new double[]{cx + R * Math.cos(a), cy + R * Math.sin(a)});
         }
-        if (exits.isEmpty()) {
-            // Fallback: tiếp tục thẳng
-            exits.add(entryDir);
-        }
-        int exitDir = exits.get(random.nextInt(exits.size()));
+        wps.add(new double[]{cx + R * Math.cos(aExit), cy + R * Math.sin(aExit)});
 
-        // --- Điểm entry/exit trên vành vòng xuyến (có offset làn) ---
-        // Entry: Xe đến từ phía nào thì điểm entry nằm ở phía đó của ring
-        double[] entryPt = ringEntryPoint(cx, cy, R, off, entryDir);
-        double[] exitPt  = ringExitPoint(cx, cy, R, off, exitDir);
+        // --- 6. Điểm thoát trên đường ra: dọc cánh exit + lệch làn phải ---
+        // pháp tuyến bên phải hướng ra (Y-down): (ux,uy) → (-uy, ux)
+        double px = -exitArm[1], py = exitArm[0];
+        wps.add(new double[]{
+            cx + exitArm[0] * EXIT_DIST + px * off,
+            cy + exitArm[1] * EXIT_DIST + py * off
+        });
 
-        // --- Các điểm ring trung gian (CCW: W→S→E→N→W) ---
-        // ring[0]=West, ring[1]=South, ring[2]=East, ring[3]=North
-        double[][] ringPts = {
-            {cx - R, cy},   // 0: West
-            {cx, cy + R},   // 1: South
-            {cx + R, cy},   // 2: East
-            {cx, cy - R},   // 3: North
-        };
-
-        // Vị trí của entryDir trên vòng CCW
-        int[] entryRingPos = {0, 3, 2, 1}; // dir→ ring position (dir=0/East→pos0/West,...)
-        int[] exitRingPos  = {2, 1, 0, 3}; // dir→ ring position (dir=0/East→pos2/East,...)
-        int ePos = entryRingPos[entryDir];
-        int xPos = exitRingPos[exitDir];
-
-        List<double[]> waypoints = new ArrayList<>();
-        waypoints.add(entryPt);
-
-        // Duyệt CCW từ ePos+1 đến xPos
-        int pos = (ePos + 1) % 4;
-        int maxSteps = 4;
-        while (pos != xPos && maxSteps-- > 0) {
-            waypoints.add(ringPts[pos]);
-            pos = (pos + 1) % 4;
-        }
-
-        // Nếu không có điểm trung gian (góc gần), thêm 1 điểm giữa để mượt hơn
-        if (waypoints.size() == 1) {
-            double midAngle = Math.atan2((entryPt[1] + exitPt[1]) / 2 - cy,
-                                         (entryPt[0] + exitPt[0]) / 2 - cx);
-            waypoints.add(new double[]{cx + R * Math.cos(midAngle), cy + R * Math.sin(midAngle)});
-        }
-
-        waypoints.add(exitPt);
-
-        // Điểm cuối xa trên đường ra (đủ xa để xe thoát khỏi ring)
-        double[] roadEnd = roadExitPoint(cx, cy, R + 90, exitDir, off);
-        waypoints.add(roadEnd);
-
-        v.setWaypoints(waypoints);
-    }
-
-    /** Điểm xe VÀO ring: bên phải (right-hand traffic) của cánh entry */
-    private double[] ringEntryPoint(double cx, double cy, double R, double off, int dir) {
-        return switch (dir) {
-            case 0 -> new double[]{cx - R, cy + off}; // Đến từ W, đi Đông → lane Nam
-            case 1 -> new double[]{cx - off, cy - R}; // Đến từ N, đi Nam  → lane Tây
-            case 2 -> new double[]{cx + R, cy - off}; // Đến từ E, đi Tây  → lane Bắc
-            case 3 -> new double[]{cx + off, cy + R}; // Đến từ S, đi Bắc  → lane Đông
-            default -> new double[]{cx, cy};
-        };
-    }
-
-    /** Điểm xe RA ring: bên phải của cánh exit */
-    private double[] ringExitPoint(double cx, double cy, double R, double off, int dir) {
-        return switch (dir) {
-            case 0 -> new double[]{cx + R, cy + off}; // Ra Đông  → lane Nam
-            case 1 -> new double[]{cx - off, cy + R}; // Ra Nam   → lane Tây
-            case 2 -> new double[]{cx - R, cy - off}; // Ra Tây   → lane Bắc
-            case 3 -> new double[]{cx + off, cy - R}; // Ra Bắc   → lane Đông
-            default -> new double[]{cx, cy};
-        };
-    }
-
-    /** Điểm trên đường ra, đủ xa khỏi ring để xe tiếp tục đi thẳng */
-    private double[] roadExitPoint(double cx, double cy, double dist, int dir, double off) {
-        return switch (dir) {
-            case 0 -> new double[]{cx + dist, cy + off};
-            case 1 -> new double[]{cx - off, cy + dist};
-            case 2 -> new double[]{cx - dist, cy - off};
-            case 3 -> new double[]{cx + off, cy - dist};
-            default -> new double[]{cx, cy};
-        };
+        v.setWaypoints(wps);
     }
 }
