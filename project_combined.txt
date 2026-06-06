@@ -44,6 +44,7 @@ public class Constants {
     // Cấu hình đường sá
     public static final double LANE_WIDTH = 30;
     public static final double ROAD_WIDTH = LANE_WIDTH * 4; // 120px tổng
+    public static final double ROUNDABOUT_RADIUS = 100;     // bán kính nền nhựa bùng binh
 
     // Tốc độ cơ sở (px/frame) cho từng loại xe – nhỏ hơn để mô phỏng thực tế hơn
     public static final double BASE_CAR       = 2.2;
@@ -75,10 +76,9 @@ import javafx.animation.AnimationTimer;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
-import javafx.scene.shape.StrokeLineCap;
+import model.Pedestrian;
 import model.map.CityMap;
 import model.map.IntersectionNode;
-import model.map.RoadEdge;
 import java.util.ArrayList;
 import java.util.List;
 import model.traffic.TrafficLight;
@@ -87,6 +87,7 @@ import system.MovementSystem;
 import system.SpawnSystem;
 import system.CollisionSystem;
 import system.TrafficRuleSystem;
+import view.MapRenderer;
 import view.VehicleRenderer;
 
 public class SimulationEngine extends AnimationTimer {
@@ -111,9 +112,14 @@ public class SimulationEngine extends AnimationTimer {
     // --- ENVIRONMENT ---
     private boolean isPaused = false;
     private boolean isDebugMode = false;
-    private double timeOfDay = 12.0; 
+    private double timeOfDay = 12.0;
     private double[] rainX = new double[300];
     private double[] rainY = new double[300];
+
+    // --- GRAPHIC ASSETS (generated once per map load) ---
+    private List<MapRenderer.Decoration>  decorations  = new ArrayList<>();
+    private List<MapRenderer.StreetLight> streetLights = new ArrayList<>();
+    private List<Pedestrian>              pedestrians  = new ArrayList<>();
    
 
     public SimulationEngine(Canvas canvas) {
@@ -168,9 +174,13 @@ public class SimulationEngine extends AnimationTimer {
         spawnSystem.resetTimer();
         cityMap.loadMap(mapType);
         zoomScale = 1.0;
-        unlockCamera();           
-        
-        // Thuật toán: Tìm Ngã tư đầu tiên (Ngã tư trung tâm) để chĩa Camera vào
+        unlockCamera();
+
+        // Sinh tài nguyên đồ họa một lần sau khi load map
+        decorations  = MapRenderer.generateDecorations(cityMap);
+        streetLights = MapRenderer.generateStreetLights(cityMap);
+        pedestrians  = MapRenderer.generatePedestrians(cityMap);
+
         if (!cityMap.getNodes().isEmpty()) {
             IntersectionNode centerNode = cityMap.getNodes().get(0);
             cameraX = centerNode.getX() - (canvas.getWidth() / 2);
@@ -253,14 +263,15 @@ public class SimulationEngine extends AnimationTimer {
         movementSystem.updatePositions(vehicles, cityMap); // Gắn cờ bẻ lái Bezier
         
         // 5. CHO TỪNG CHIẾC XE TỰ CHẠY BẰNG BỘ NÃO MỚI CỦA CHÚNG NÓ
-        for (Vehicle v : vehicles) {
-            v.update(vehicles); 
-        }
+        for (Vehicle v : vehicles) v.update(vehicles);
 
-        // 6. Dọn dẹp xe đi quá xa khỏi map + dừng âm thanh ngay khi xe cuối cùng biến mất
+        // 5b. Cập nhật người đi bộ
+        for (Pedestrian p : pedestrians) p.update();
+
+        // 6. Dọn dẹp xe ra khỏi vùng bản đồ + dừng âm thanh ngay khi xe cuối cùng biến mất
         boolean hadAmbulance = vehicles.stream().anyMatch(v -> v instanceof model.vehicle.EmergencyVehicle);
         boolean hadFiretruck  = vehicles.stream().anyMatch(v -> v instanceof model.vehicle.FireTruck);
-        vehicles.removeIf(v -> v.getX() < -1500 || v.getX() > 5000 || v.getY() < -1500 || v.getY() > 5000);
+        vehicles.removeIf(v -> v.getX() < -600 || v.getX() > 2000 || v.getY() < -700 || v.getY() > 1700);
         if (hadAmbulance && vehicles.stream().noneMatch(v -> v instanceof model.vehicle.EmergencyVehicle)) util.SoundManager.stopAmbulance();
         if (hadFiretruck  && vehicles.stream().noneMatch(v -> v instanceof model.vehicle.FireTruck))        util.SoundManager.stopFiretruck();
 
@@ -282,239 +293,168 @@ public class SimulationEngine extends AnimationTimer {
         return Color.LIMEGREEN;
     }
 
-    /** Vẽ trụ đèn giao thông tại (x, y) gồm hộp đen + 1 đèn màu */
+    // ---- 3D traffic light (basic: 1 dot; graphic: 3-bulb pole) ----
     private void drawTrafficLight(GraphicsContext gc, TrafficLight light, double x, double y) {
-        // Hộp đèn màu đen
-        gc.setFill(Color.web("#2c3e50"));
-        gc.fillRoundRect(x, y, 16, 22, 4, 4);
-        // Đèn màu bên trong
-        gc.setFill(getColorForPhase(light.getPhase()));
-        gc.fillOval(x + 3, y + 3, 10, 10);
-        // Halo nhỏ khi xanh
-        if (light.getPhase() == TrafficLight.Phase.GREEN) {
-            gc.setFill(Color.LIMEGREEN.deriveColor(0, 1, 1, 0.25));
-            gc.fillOval(x - 2, y - 2, 20, 20);
+        if (VehicleRenderer.BASIC_MODE) {
+            gc.setFill(Color.web("#2c3e50")); gc.fillRoundRect(x, y, 16, 22, 4, 4);
+            gc.setFill(getColorForPhase(light.getPhase())); gc.fillOval(x+3, y+3, 10, 10);
+            return;
+        }
+        // Shadow + pole
+        gc.setFill(Color.rgb(0,0,0,0.18)); gc.fillOval(x-1, y+43, 18, 6);
+        gc.setStroke(Color.web("#4a5568")); gc.setLineWidth(2.5);
+        gc.strokeLine(x+8, y+48, x+8, y+18);
+        // Housing
+        gc.setFill(Color.web("#111820")); gc.fillRoundRect(x+1, y+1, 16, 40, 4, 4);
+        gc.setFill(Color.web("#1a252f")); gc.fillRoundRect(x, y, 16, 40, 4, 4);
+        gc.setFill(Color.rgb(80,100,120,0.3)); gc.fillRoundRect(x, y, 3, 40, 4, 4);
+        // 3 bulbs
+        TrafficLight.Phase ph = light.getPhase();
+        drawBulb(gc, x+3, y+3,  10, Color.RED,      ph == TrafficLight.Phase.RED);
+        drawBulb(gc, x+3, y+15, 10, Color.YELLOW,   ph == TrafficLight.Phase.YELLOW);
+        drawBulb(gc, x+3, y+27, 10, Color.LIMEGREEN, ph == TrafficLight.Phase.GREEN);
+    }
+
+    private void drawBulb(GraphicsContext gc, double x, double y, double sz, Color c, boolean lit) {
+        if (lit) {
+            gc.setFill(c.deriveColor(0,1,1,0.3)); gc.fillOval(x-3, y-3, sz+6, sz+6);
+            gc.setFill(c); gc.fillOval(x, y, sz, sz);
+            gc.setFill(Color.rgb(255,255,255,0.5)); gc.fillOval(x+2, y+1, sz*0.35, sz*0.35);
+        } else {
+            gc.setFill(c.deriveColor(0, 0.3, 0.25, 1)); gc.fillOval(x, y, sz, sz);
         }
     }
 
     private void render() {
-        // TẦNG 1: VẼ ĐỊA HÌNH
-        gc.setFill(Color.web("#27ae60")); 
-        gc.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
-        
+        double cW = canvas.getWidth(), cH = canvas.getHeight();
+
+        // Tính độ tối
+        double darkness = 0;
+        if (config.Constants.TIME_MODE == 2) {
+            darkness = 0.75;
+        } else if (config.Constants.TIME_MODE == 0) {
+            if      (timeOfDay >= 18 || timeOfDay <= 6)  darkness = 0.75;
+            else if (timeOfDay > 16)  darkness = 0.75 * ((timeOfDay - 16) / 2.0);
+            else if (timeOfDay < 8)   darkness = 0.75 * (1 - ((timeOfDay - 6) / 2.0));
+        }
+
+        // NỀN
+        if (VehicleRenderer.BASIC_MODE) {
+            gc.setFill(Color.web("#27ae60")); gc.fillRect(0, 0, cW, cH);
+        } else {
+            MapRenderer.drawBackground(gc, cameraX, cameraY);
+        }
+
         gc.save();
-        // Phóng to / Thu nhỏ xoay quanh tâm màn hình
-        gc.translate(canvas.getWidth()/2, canvas.getHeight()/2);
+        gc.translate(cW/2, cH/2);
         gc.scale(zoomScale, zoomScale);
-        gc.translate(-canvas.getWidth()/2, -canvas.getHeight()/2);
+        gc.translate(-cW/2, -cH/2);
         gc.translate(-cameraX, -cameraY);
 
-        // 1.1 VẼ ĐƯỜNG NHỰA VÀ VẠCH KẺ LÀN (Đã hỗ trợ phân cấp Đại lộ, Phố, Ngõ)
-        for (RoadEdge road : cityMap.getRoads()) {
-            double sx = road.getStartNode().getX(); double sy = road.getStartNode().getY();
-            double ex = road.getEndNode().getX(); double ey = road.getEndNode().getY();
-            
-            double roadW = road.getWidth(); // Lấy độ rộng linh hoạt từ class RoadEdge
-            
-            // Vẽ nền đường nhựa màu xám
-            gc.setStroke(Color.web("#34495e")); 
-            gc.setLineWidth(roadW); 
-            gc.setLineCap(StrokeLineCap.BUTT); 
-            gc.strokeLine(sx, sy, ex, ey);
-            
-            // Vẽ vạch kẻ đường (Sẽ không vẽ vạch nếu đó là ALLEY - Ngõ hẻm)
-            if (road.getType() != RoadEdge.RoadType.ALLEY) {
-                gc.setStroke(Color.web("#f1c40f")); // Màu vàng
-                gc.setLineWidth(2);
-                
-                if (road.getType() == RoadEdge.RoadType.AVENUE) {
-                    // Cấp Đại lộ (AVENUE): Vẽ vạch đôi liền màu vàng (Tim đường)
-                    gc.setLineDashes(null);
-                    gc.strokeLine(sx + 2, sy + 2, ex + 2, ey + 2);
-                    gc.strokeLine(sx - 2, sy - 2, ex - 2, ey - 2);
-                    
-                    // Vẽ vạch đứt phân làn 4 xe
-                    drawDashedLine(sx, sy, ex, ey, roadW / 4);  
-                    drawDashedLine(sx, sy, ex, ey, -roadW / 4); 
-                } else {
-                    // Cấp Đường phố (STREET): Vẽ 1 vạch đứt màu vàng ở giữa
-                    gc.setLineDashes(15, 15);
-                    gc.strokeLine(sx, sy, ex, ey);
-                    gc.setLineDashes(null);
-                }
-            }
-        
-        }
+        // === TẦNG 1a: Vỉa hè ===
+        if (!VehicleRenderer.BASIC_MODE) MapRenderer.drawSidewalks(gc, cityMap);
 
-        // 1.2 VẼ CHI TIẾT NGÃ TƯ (Vạch đi bộ, Vạch dừng, Vạch dẫn hướng)
-        for (IntersectionNode node : cityMap.getNodes()) {
-            double nX = node.getX(); double nY = node.getY();
-            double halfW = Constants.ROAD_WIDTH / 2;
+        // === TẦNG 1b: Đường + vạch kẻ ===
+        MapRenderer.drawRoads(gc, cityMap);
 
-            // Xóa các vạch kẻ đường thô bạo đâm xuyên vào giữa ngã tư
-            gc.setFill(Color.web("#34495e"));
-            gc.fillRect(nX - halfW, nY - halfW, Constants.ROAD_WIDTH, Constants.ROAD_WIDTH);
-            
-            if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
-                // --- ĐỒ HỌA BÙNG BINH (NGÃ 5) ---
-                double radius = 40;
+        // === TẦNG 1c: Chi tiết ngã tư / bùng binh ===
+        MapRenderer.drawIntersectionDetails(gc, cityMap);
 
-                // Đảo cỏ xanh ở giữa
-                gc.setFill(Color.web("#2ecc71")); gc.fillOval(nX - radius, nY - radius, radius * 2, radius * 2);
-                gc.setStroke(Color.WHITE); gc.setLineWidth(2); gc.strokeOval(nX - radius, nY - radius, radius * 2, radius * 2);
+        // === TẦNG 1d: Trang trí mặt đất (công viên, bãi đỗ) ===
+        if (!VehicleRenderer.BASIC_MODE) MapRenderer.drawDecorationsGround(gc, decorations);
 
-                // Vạch dừng cho 4 hướng cardinal (xe dừng ở đây, offset +15)
-                gc.setStroke(Color.WHITE); gc.setLineWidth(3);
-                gc.strokeLine(nX - halfW, nY - halfW - 15, nX,        nY - halfW - 15); // Bắc
-                gc.strokeLine(nX,        nY + halfW + 15, nX + halfW, nY + halfW + 15); // Nam
-                gc.strokeLine(nX - halfW - 15, nY,        nX - halfW - 15, nY + halfW); // Tây
-                gc.strokeLine(nX + halfW + 15, nY - halfW, nX + halfW + 15, nY);        // Đông
+        // === TẦNG 1e: Trang trí cao (nhà, cây, cửa hàng) ===
+        if (!VehicleRenderer.BASIC_MODE) MapRenderer.drawDecorationsAbove(gc, decorations, darkness);
 
-                // Vạch đi bộ cho 4 hướng cardinal (zebra, offset +5 – giữa vạch dừng và ngã tư)
-                gc.setStroke(Color.WHITE); gc.setLineWidth(6); gc.setLineDashes(4, 6);
-                gc.strokeLine(nX - halfW + 5, nY - halfW - 5, nX + halfW - 5, nY - halfW - 5); // Bắc
-                gc.strokeLine(nX - halfW + 5, nY + halfW + 5, nX + halfW - 5, nY + halfW + 5); // Nam
-                gc.strokeLine(nX - halfW - 5, nY - halfW + 5, nX - halfW - 5, nY + halfW - 5); // Tây
-                gc.strokeLine(nX + halfW + 5, nY - halfW + 5, nX + halfW + 5, nY + halfW - 5); // Đông
-                gc.setLineDashes(null);
-            } else {
-                // --- ĐỒ HỌA NGÃ 3, NGÃ 4 (THÔNG MINH theo hướng đường) ---
-                boolean hasNorth = false, hasSouth = false, hasWest = false, hasEast = false;
-                for (RoadEdge r : cityMap.getRoads()) {
-                    if (r.getStartNode() == node || r.getEndNode() == node) {
-                        IntersectionNode neighbor = (r.getStartNode() == node) ? r.getEndNode() : r.getStartNode();
-                        if (neighbor.getY() < node.getY() - 10) hasNorth = true;
-                        if (neighbor.getY() > node.getY() + 10) hasSouth = true;
-                        if (neighbor.getX() < node.getX() - 10) hasWest = true;
-                        if (neighbor.getX() > node.getX() + 10) hasEast = true;
-                    }
-                }
+        // === TẦNG 2: Thân xe ===
+        for (Vehicle v : vehicles) VehicleRenderer.drawCarBody(gc, v);
 
-                // a. Vạch đi bộ (Zebra Crossing) – mỗi hướng độc lập, offset +5 (gần ngã tư)
-                gc.setStroke(Color.WHITE); gc.setLineWidth(6); gc.setLineDashes(4, 6);
-                if (hasNorth) gc.strokeLine(nX - halfW + 5, nY - halfW - 5, nX + halfW - 5, nY - halfW - 5);
-                if (hasSouth) gc.strokeLine(nX - halfW + 5, nY + halfW + 5, nX + halfW - 5, nY + halfW + 5);
-                if (hasWest)  gc.strokeLine(nX - halfW - 5, nY - halfW + 5, nX - halfW - 5, nY + halfW - 5);
-                if (hasEast)  gc.strokeLine(nX + halfW + 5, nY - halfW + 5, nX + halfW + 5, nY + halfW - 5);
-                gc.setLineDashes(null);
-
-                // b. Vạch dừng – offset +15 (xa ngã tư hơn, xe dừng trước rồi mới đến vạch đi bộ)
-                gc.setStroke(Color.WHITE); gc.setLineWidth(3);
-                if (hasNorth) gc.strokeLine(nX - halfW, nY - halfW - 15, nX,        nY - halfW - 15);
-                if (hasSouth) gc.strokeLine(nX,        nY + halfW + 15, nX + halfW, nY + halfW + 15);
-                if (hasWest)  gc.strokeLine(nX - halfW - 15, nY,        nX - halfW - 15, nY + halfW);
-                if (hasEast)  gc.strokeLine(nX + halfW + 15, nY - halfW, nX + halfW + 15, nY);
-
-                // c. Vạch dẫn hướng ôm cua (Guide Arcs) - vàng mờ
-                gc.setStroke(Color.rgb(241, 196, 15, 0.4));
-                gc.setLineWidth(1.5);
-                gc.setLineDashes(5, 10);
-                gc.strokeArc(nX - halfW, nY - halfW, halfW, halfW, 270, 90, javafx.scene.shape.ArcType.OPEN);
-                gc.strokeArc(nX, nY - halfW, halfW, halfW, 180, 90, javafx.scene.shape.ArcType.OPEN);
-                gc.strokeArc(nX - halfW, nY, halfW, halfW, 0, 90, javafx.scene.shape.ArcType.OPEN);
-                gc.strokeArc(nX, nY, halfW, halfW, 90, 90, javafx.scene.shape.ArcType.OPEN);
-                gc.setLineDashes(null);
-            }
-        }
-
-        // TẦNG 2: VẼ THÂN XE 
-        for (Vehicle v : vehicles) {
-            VehicleRenderer.drawCarBody(gc, v);
-        }
-
-        // TẦNG 3: TÍNH TOÁN VÀ PHỦ MÀN ĐÊM (Shading Pass)
-        double darkness = 0;
-        if (timeOfDay >= 18 || timeOfDay <= 6) darkness = 0.75; 
-        else if (timeOfDay > 16 && timeOfDay < 18) darkness = 0.75 * ((timeOfDay - 16) / 2.0); 
-        else if (timeOfDay > 6 && timeOfDay < 8) darkness = 0.75 * (1 - ((timeOfDay - 6) / 2.0)); 
-
+        // === TẦNG 3: Phủ màn đêm ===
         if (darkness > 0) {
-            gc.setFill(Color.rgb(10, 15, 30, darkness)); 
-            // Tính toán vùng che phủ rộng hơn để không bị lỗi màn đêm khi zoom out
+            gc.setFill(Color.rgb(10, 15, 30, darkness));
             gc.fillRect(cameraX - 5000, cameraY - 5000, 15000, 15000);
         }
 
-        // TẦNG 4: VẼ ĐÈN PHA & ĐÈN HẬU 
-        for (Vehicle v : vehicles) {
-            VehicleRenderer.drawLights(gc, v, darkness);
-        }
+        // === TẦNG 4: Đèn pha xe + quầng đèn đường (ADD blend) ===
+        for (Vehicle v : vehicles) VehicleRenderer.drawLights(gc, v, darkness);
+        if (!VehicleRenderer.BASIC_MODE) MapRenderer.drawStreetLightGlow(gc, streetLights, darkness);
 
-        // TẦNG 5: VẼ ĐÈN GIAO THÔNG (chỉ vẽ ở hướng có đường)
+        // === TẦNG 5: Cột đèn đường + Đèn giao thông ===
+        if (!VehicleRenderer.BASIC_MODE) MapRenderer.drawStreetLightPoles(gc, streetLights);
+
         for (IntersectionNode node : cityMap.getNodes()) {
             if (node.isSpawnNode()) continue;
             double nX = node.getX(), nY = node.getY();
-            double off = Constants.ROAD_WIDTH / 2 + 8; // khoảng cách từ tâm đến trụ đèn
+            double off = Constants.ROAD_WIDTH / 2 + 8;
 
             if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
-                // 5 đèn: N, S, E, W + NW diagonal
-                drawTrafficLight(gc, node.getLightNorth(), nX,        nY - off - 10);
-                drawTrafficLight(gc, node.getLightSouth(), nX,        nY + off);
-                drawTrafficLight(gc, node.getLightEast(),  nX + off,  nY);
-                drawTrafficLight(gc, node.getLightWest(),  nX - off - 20, nY);
-                drawTrafficLight(gc, node.getLightNW(),    nX - off,  nY - off);
+                double off5 = config.Constants.ROUNDABOUT_RADIUS + 83;
+                double d45  = Math.cos(Math.toRadians(45)) * off5;
+                drawTrafficLight(gc, node.getLightNorth(), nX - 8,          nY - off5 - 22);
+                drawTrafficLight(gc, node.getLightSouth(), nX - 8,          nY + off5);
+                drawTrafficLight(gc, node.getLightEast(),  nX + off5,       nY - 11);
+                drawTrafficLight(gc, node.getLightWest(),  nX - off5 - 16,  nY - 11);
+                if (node.isHasNW()) drawTrafficLight(gc, node.getLightNW(), nX-d45-16, nY-d45-22);
             } else {
-                // Chỉ vẽ đèn ở hướng có đường thực sự
-                if (node.isHasNorth()) drawTrafficLight(gc, node.getLightNorth(), nX - 12, nY - off - 10);
-                if (node.isHasSouth()) drawTrafficLight(gc, node.getLightSouth(), nX + 12, nY + off);
-                if (node.isHasEast())  drawTrafficLight(gc, node.getLightEast(),  nX + off, nY - 12);
-                if (node.isHasWest())  drawTrafficLight(gc, node.getLightWest(),  nX - off - 20, nY + 12);
+                if (node.isHasNorth()) drawTrafficLight(gc, node.getLightNorth(), nX - 12,     nY - off - 10);
+                if (node.isHasSouth()) drawTrafficLight(gc, node.getLightSouth(), nX + 12,     nY + off);
+                if (node.isHasEast())  drawTrafficLight(gc, node.getLightEast(),  nX + off,    nY - 12);
+                if (node.isHasWest())  drawTrafficLight(gc, node.getLightWest(),  nX - off-20, nY + 12);
             }
 
-            // Đồng hồ đếm ngược (hiển thị ở tâm ngã tư)
+            // Đồng hồ đếm ngược
             int remain = (int) Math.ceil(node.getRemainingTime());
-            boolean showText = node.getLightMode() == IntersectionNode.LightMode.COUNTDOWN
+            boolean showTimer = node.getLightMode() == IntersectionNode.LightMode.COUNTDOWN
                     || (node.getLightMode() == IntersectionNode.LightMode.SMART_COUNTDOWN && remain <= 10);
-            if (showText) {
-                gc.setFill(Color.WHITE);
-                gc.setFont(javafx.scene.text.Font.font("Arial", javafx.scene.text.FontWeight.BOLD, 16));
-                gc.fillText(String.valueOf(remain), nX - 8, nY + 6);
+            if (showTimer) {
+                if (VehicleRenderer.BASIC_MODE) {
+                    gc.setFill(Color.WHITE);
+                    gc.setFont(javafx.scene.text.Font.font("Arial", javafx.scene.text.FontWeight.BOLD, 16));
+                    gc.fillText(String.valueOf(remain), nX - 8, nY + 6);
+                } else {
+                    gc.setFill(Color.web("#1a252f")); gc.fillRoundRect(nX-12, nY-12, 24, 18, 4, 4);
+                    gc.setFill(Color.WHITE);
+                    gc.setFont(javafx.scene.text.Font.font("Arial", javafx.scene.text.FontWeight.BOLD, 12));
+                    gc.fillText(String.valueOf(remain), nX - 8, nY + 3);
+                }
             }
         }
 
-        // TẦNG 6: GIAO DIỆN GỠ LỖI (Tia Bezier)
+        // === TẦNG 6: Debug Bezier ===
         if (isDebugMode) {
             for (Vehicle v : vehicles) {
-                gc.setStroke(Color.CYAN); gc.setLineWidth(1); gc.strokeRect(v.getX() - v.getWidth()/2, v.getY() - v.getHeight()/2, v.getWidth(), v.getHeight());
+                gc.setStroke(Color.CYAN); gc.setLineWidth(1);
+                gc.strokeRect(v.getX()-v.getWidth()/2, v.getY()-v.getHeight()/2, v.getWidth(), v.getHeight());
                 if (v.isTurning()) {
                     gc.setStroke(Color.MAGENTA);
-                    gc.strokeLine(v.getP0x(), v.getP0y(), v.getP1x(), v.getP1y()); gc.strokeLine(v.getP1x(), v.getP1y(), v.getP2x(), v.getP2y());
+                    gc.strokeLine(v.getP0x(),v.getP0y(),v.getP1x(),v.getP1y());
+                    gc.strokeLine(v.getP1x(),v.getP1y(),v.getP2x(),v.getP2y());
                 }
             }
         }
-        
-        gc.restore(); 
 
-        // TẦNG 7: VẼ MƯA RƠI (Bám theo màn hình kính lái)
+        // === TẦNG 7: Người đi bộ ===
+        MapRenderer.drawPedestrians(gc, pedestrians);
+
+        gc.restore();
+
+        // === TẦNG 8: Mưa (bám màn hình) ===
         if (config.Constants.IS_RAINING) {
-            gc.setStroke(Color.rgb(200, 220, 255, 0.6)); 
-            gc.setLineWidth(1.5);
+            gc.setStroke(Color.rgb(200, 220, 255, 0.6)); gc.setLineWidth(1.5);
             for (int i = 0; i < 300; i++) {
-                gc.strokeLine(rainX[i], rainY[i], rainX[i] - 3, rainY[i] + 15);
-                rainY[i] += 25; 
-                rainX[i] -= 5;
-                if (rainY[i] > canvas.getHeight()) {
-                    rainY[i] = -20;
-                    rainX[i] = Math.random() * canvas.getWidth() + 100;
-                }
+                gc.strokeLine(rainX[i], rainY[i], rainX[i]-3, rainY[i]+15);
+                rainY[i] += 25; rainX[i] -= 5;
+                if (rainY[i] > cH) { rainY[i] = -20; rainX[i] = Math.random()*cW+100; }
             }
         }
     }
 
-    private void drawDashedLine(double sx, double sy, double ex, double ey, double offset) {
-        double angle = Math.atan2(ey - sy, ex - sx);
-        double p1x = sx + Math.cos(angle + Math.PI / 2) * offset;
-        double p1y = sy + Math.sin(angle + Math.PI / 2) * offset;
-        double p2x = ex + Math.cos(angle + Math.PI / 2) * offset;
-        double p2y = ey + Math.sin(angle + Math.PI / 2) * offset;
-
-        gc.setStroke(Color.WHITE);
-        gc.setLineWidth(2);
-        gc.setLineDashes(15, 15); 
-        gc.strokeLine(p1x, p1y, p2x, p2y);
-        gc.setLineDashes(null); 
-    }
     public javafx.scene.canvas.Canvas getCanvas() { return canvas; }
-    public void clearAllVehicles() { vehicles.clear(); }
+    public void clearAllVehicles() {
+        vehicles.clear();
+        util.SoundManager.stopAmbulance();
+        util.SoundManager.stopFiretruck();
+    }
     public void resetCamera() { 
             zoomScale = 1.0; 
             if (!cityMap.getNodes().isEmpty()) {
@@ -534,6 +474,57 @@ public class SimulationEngine extends AnimationTimer {
         }
     }
 }
+
+
+===== FILE: C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\model\Pedestrian.java =====
+
+package model;
+
+import javafx.scene.paint.Color;
+
+public class Pedestrian {
+    private double x, y, angle, speed;
+    private double startX, startY, endX, endY;
+    private int animStep = 0;
+    private final Color shirtColor;
+
+    private static final Color[] SHIRT_COLORS = {
+        Color.web("#e74c3c"), Color.web("#3498db"), Color.web("#2ecc71"),
+        Color.web("#9b59b6"), Color.web("#f39c12"), Color.web("#1abc9c"),
+        Color.web("#e91e63"), Color.web("#ff5722"), Color.web("#00bcd4")
+    };
+
+    public Pedestrian(double sx, double sy, double ex, double ey, int colorIdx) {
+        this.startX = sx; this.startY = sy;
+        this.endX   = ex; this.endY   = ey;
+        this.x = sx; this.y = sy;
+        this.speed = 0.28 + (colorIdx % 4) * 0.07;
+        this.shirtColor = SHIRT_COLORS[Math.abs(colorIdx) % SHIRT_COLORS.length];
+        this.angle = Math.toDegrees(Math.atan2(ey - sy, ex - sx));
+    }
+
+    public void update() {
+        animStep++;
+        double dx = endX - x, dy = endY - y;
+        if (Math.hypot(dx, dy) < 4) {
+            double tx = startX, ty = startY;
+            startX = endX; startY = endY;
+            endX = tx; endY = ty;
+            angle = Math.toDegrees(Math.atan2(endY - startY, endX - startX));
+        } else {
+            double rad = Math.toRadians(angle);
+            x += speed * Math.cos(rad);
+            y += speed * Math.sin(rad);
+        }
+    }
+
+    public double getX()          { return x; }
+    public double getY()          { return y; }
+    public double getAngle()      { return angle; }
+    public int    getAnimStep()   { return animStep; }
+    public Color  getShirtColor() { return shirtColor; }
+}
+
 
 
 ===== FILE: C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\model\map\CityMap.java =====
@@ -661,6 +652,9 @@ public class CityMap {
         addBidirectional(nw, wc); addBidirectional(wc, sw);
         addBidirectional(nc, center); addBidirectional(center, sc);
         addBidirectional(ne, ec); addBidirectional(ec, se);
+
+        // --- CÁNH TÂY BẮC CỦA NGÃ 5 TRUNG TÂM ---
+        addSpawnRoad(cx - 750, cy - 750, center); // Spawn chéo TâyBắc → ngã 5
 
         // --- 12 SPAWN NODE NGOÀI RÌA ---
         // Cạnh Bắc (3 spawn)
@@ -1499,6 +1493,15 @@ import util.TurnType;
 public class MovementSystem {
     private Random random = new Random();
 
+    // ===== Tham số vòng xuyến =====
+    private static final double RING_RADIUS  = 62;   // bán kính làn chạy (> đảo cỏ 40, < nền nhựa 100)
+    private static final double LANE_OFF     = 15;   // độ lệch làn phải
+    private static final double WP_STEP_RAD  = Math.toRadians(10); // mật độ waypoint: 10°/điểm → cong mượt
+    private static final double TRIGGER_5WAY = 150;  // khoảng cách bắt đầu bám vòng xuyến (< vạch dừng ~190)
+    private static final double TRIGGER_OTHER = 75;
+    private static final double EXIT_DIST    = RING_RADIUS + 120; // điểm cuối PHẢI > TRIGGER_5WAY
+                                                                  // để xe vừa thoát không bị kích hoạt lại
+
     public void updatePositions(List<Vehicle> vehicles, CityMap cityMap) {
         for (Vehicle v : vehicles) {
             if (v.isBroken() || v.isTurning() || v.hasWaypoints()) continue;
@@ -1506,12 +1509,31 @@ public class MovementSystem {
             for (IntersectionNode node : cityMap.getNodes()) {
                 if (node.isSpawnNode()) continue;
                 double dist = Math.hypot(v.getX() - node.getX(), v.getY() - node.getY());
-                if (dist < 75) {
+
+                boolean isFiveWay = node.getType() == IntersectionNode.NodeType.FIVE_WAY;
+                double trigger = isFiveWay ? TRIGGER_5WAY : TRIGGER_OTHER;
+
+                if (dist < trigger) {
+                    // NHƯỜNG ĐƯỜNG: nếu ngay cửa vào đang có xe chạy trong vòng xuyến → chờ
+                    if (isFiveWay && ringBusyNear(v, vehicles)) {
+                        v.setSpeed(Math.max(0, v.getSpeed() - 0.25));
+                        break; // chưa cấp waypoint, frame sau kiểm tra lại
+                    }
                     startTurning(v, node, cityMap);
                     break;
                 }
             }
         }
+    }
+
+    /** Có xe nào đang lưu thông trong vòng xuyến ở gần cửa vào của v không? */
+    private boolean ringBusyNear(Vehicle v, List<Vehicle> vehicles) {
+        for (Vehicle other : vehicles) {
+            if (other == v || !other.hasWaypoints()) continue;
+            double d = Math.hypot(other.getX() - v.getX(), other.getY() - v.getY());
+            if (d < 80) return true;
+        }
+        return false;
     }
 
     private void startTurning(Vehicle v, IntersectionNode node, CityMap cityMap) {
@@ -1525,7 +1547,7 @@ public class MovementSystem {
         }
 
         // ============================================================
-        // Ngã thường: Bezier
+        // Ngã thường: Bezier (GIỮ NGUYÊN)
         // ============================================================
 
         // Bước A: Quét Radar tìm đường
@@ -1589,131 +1611,85 @@ public class MovementSystem {
     }
 
     // ============================================================
-    // ROUNDABOUT: Tính waypoints ôm theo vòng xuyến
+    // ROUNDABOUT (PHIÊN BẢN MỚI): Sinh waypoint DÀY theo CUNG TRÒN
     //
-    // Xe đi theo luật giao thông VN (đường phải):
-    //   vào vòng → rẽ phải dọc theo vành ngoài → thoát ra cánh mong muốn
+    // Khác bản cũ:
+    //  - Không dùng 4 hướng cứng (E/S/W/N) nữa → cánh chéo Tây-Bắc
+    //    được xử lý tự nhiên như mọi cánh khác (theo vector).
+    //  - Thay vì 4 điểm cách nhau 90° (xe đi gãy khúc), sinh điểm
+    //    mỗi 10° dọc cung tròn → xe ôm cua tròn thật sự.
     //
-    // Thứ tự CCW trên màn hình (Y-down): W → S → E → N → W
-    //   ring[0]=West, ring[1]=South, ring[2]=East, ring[3]=North
+    // Chiều lưu thông (luật VN, màn hình Y-down): GÓC GIẢM DẦN
+    //   W(180°) → S(90°) → E(0°) → N(-90°) → NW(-135°) → W ...
     // ============================================================
     private void computeRoundaboutWaypoints(Vehicle v, IntersectionNode node, CityMap cityMap) {
         double cx = node.getX(), cy = node.getY();
-        double R   = 62;   // Bán kính làn vòng xuyến (> đảo cỏ 40px)
-        double off = 15;   // Offset làn phải cố định
+        double R   = RING_RADIUS;
+        double off = LANE_OFF;
 
-        // Hướng xe đang đi (0=Đông,1=Nam,2=Tây,3=Bắc)
-        int entryDir = (int) Math.round(v.getAngle() / 90.0) % 4;
-        if (entryDir < 0) entryDir += 4;
-
-        // Tìm các cánh exit hợp lệ
-        boolean[] hasExit = new boolean[4];
+        // --- 1. Gom các cánh nối vào node dưới dạng VECTOR đơn vị (tâm → ngoài) ---
+        List<double[]> arms = new ArrayList<>();
         for (RoadEdge road : cityMap.getRoads()) {
             IntersectionNode nb = null;
             if (road.getStartNode() == node) nb = road.getEndNode();
             else if (road.getEndNode() == node) nb = road.getStartNode();
             if (nb == null) continue;
             double dx = nb.getX() - cx, dy = nb.getY() - cy;
-            if (Math.abs(dx) > Math.abs(dy)) {
-                if (dx > 0) hasExit[0] = true; else hasExit[2] = true;
-            } else {
-                if (dy > 0) hasExit[1] = true; else hasExit[3] = true;
+            double len = Math.hypot(dx, dy);
+            if (len < 1) continue;
+            double ux = dx / len, uy = dy / len;
+            // bỏ trùng lặp (đường 2 chiều của cùng 1 cánh)
+            boolean dup = false;
+            for (double[] a : arms) {
+                if (a[0] * ux + a[1] * uy > 0.95) { dup = true; break; }
             }
+            if (!dup) arms.add(new double[]{ux, uy});
+        }
+        if (arms.isEmpty()) return;
+
+        // --- 2. Cánh ENTRY = cánh ngược với hướng xe đang chạy ---
+        double hRad = Math.toRadians(v.getAngle());
+        double hx = Math.cos(hRad), hy = Math.sin(hRad);
+        double[] entryArm = arms.get(0);
+        double best = -2;
+        for (double[] a : arms) {
+            double dot = -(a[0] * hx + a[1] * hy); // càng ngược hướng chạy càng lớn
+            if (dot > best) { best = dot; entryArm = a; }
         }
 
-        // Chọn exit ngẫu nhiên (không U-turn = opposite dir)
-        List<Integer> exits = new ArrayList<>();
-        for (int d = 0; d < 4; d++) {
-            if (d == (entryDir + 2) % 4) continue; // bỏ U-turn
-            if (hasExit[d]) exits.add(d);
+        // --- 3. Chọn cánh EXIT ngẫu nhiên (loại cánh entry = cấm quay đầu) ---
+        List<double[]> exitCandidates = new ArrayList<>();
+        for (double[] a : arms) if (a != entryArm) exitCandidates.add(a);
+        double[] exitArm = exitCandidates.isEmpty()
+                ? entryArm
+                : exitCandidates.get(random.nextInt(exitCandidates.size()));
+
+        // --- 4. Góc entry/exit trên vành (lệch về làn phải) ---
+        double laneShift = Math.atan2(off, R); // ~13.6°
+        double aEntry = Math.atan2(entryArm[1], entryArm[0]) - laneShift;
+        double aExit  = Math.atan2(exitArm[1],  exitArm[0])  + laneShift;
+
+        // chuẩn hoá: lưu thông theo chiều GIẢM góc → cần aExit < aEntry
+        while (aExit >= aEntry) aExit -= 2 * Math.PI;
+
+        // --- 5. Sinh waypoint dày dọc cung tròn ---
+        List<double[]> wps = new ArrayList<>();
+        for (double a = aEntry; a > aExit; a -= WP_STEP_RAD) {
+            wps.add(new double[]{cx + R * Math.cos(a), cy + R * Math.sin(a)});
         }
-        if (exits.isEmpty()) {
-            // Fallback: tiếp tục thẳng
-            exits.add(entryDir);
-        }
-        int exitDir = exits.get(random.nextInt(exits.size()));
+        wps.add(new double[]{cx + R * Math.cos(aExit), cy + R * Math.sin(aExit)});
 
-        // --- Điểm entry/exit trên vành vòng xuyến (có offset làn) ---
-        // Entry: Xe đến từ phía nào thì điểm entry nằm ở phía đó của ring
-        double[] entryPt = ringEntryPoint(cx, cy, R, off, entryDir);
-        double[] exitPt  = ringExitPoint(cx, cy, R, off, exitDir);
+        // --- 6. Điểm thoát trên đường ra: dọc cánh exit + lệch làn phải ---
+        // pháp tuyến bên phải hướng ra (Y-down): (ux,uy) → (-uy, ux)
+        double px = -exitArm[1], py = exitArm[0];
+        wps.add(new double[]{
+            cx + exitArm[0] * EXIT_DIST + px * off,
+            cy + exitArm[1] * EXIT_DIST + py * off
+        });
 
-        // --- Các điểm ring trung gian (CCW: W→S→E→N→W) ---
-        // ring[0]=West, ring[1]=South, ring[2]=East, ring[3]=North
-        double[][] ringPts = {
-            {cx - R, cy},   // 0: West
-            {cx, cy + R},   // 1: South
-            {cx + R, cy},   // 2: East
-            {cx, cy - R},   // 3: North
-        };
-
-        // Vị trí của entryDir trên vòng CCW
-        int[] entryRingPos = {0, 3, 2, 1}; // dir→ ring position (dir=0/East→pos0/West,...)
-        int[] exitRingPos  = {2, 1, 0, 3}; // dir→ ring position (dir=0/East→pos2/East,...)
-        int ePos = entryRingPos[entryDir];
-        int xPos = exitRingPos[exitDir];
-
-        List<double[]> waypoints = new ArrayList<>();
-        waypoints.add(entryPt);
-
-        // Duyệt CCW từ ePos+1 đến xPos
-        int pos = (ePos + 1) % 4;
-        int maxSteps = 4;
-        while (pos != xPos && maxSteps-- > 0) {
-            waypoints.add(ringPts[pos]);
-            pos = (pos + 1) % 4;
-        }
-
-        // Nếu không có điểm trung gian (góc gần), thêm 1 điểm giữa để mượt hơn
-        if (waypoints.size() == 1) {
-            double midAngle = Math.atan2((entryPt[1] + exitPt[1]) / 2 - cy,
-                                         (entryPt[0] + exitPt[0]) / 2 - cx);
-            waypoints.add(new double[]{cx + R * Math.cos(midAngle), cy + R * Math.sin(midAngle)});
-        }
-
-        waypoints.add(exitPt);
-
-        // Điểm cuối xa trên đường ra (đủ xa để xe thoát khỏi ring)
-        double[] roadEnd = roadExitPoint(cx, cy, R + 90, exitDir, off);
-        waypoints.add(roadEnd);
-
-        v.setWaypoints(waypoints);
-    }
-
-    /** Điểm xe VÀO ring: bên phải (right-hand traffic) của cánh entry */
-    private double[] ringEntryPoint(double cx, double cy, double R, double off, int dir) {
-        return switch (dir) {
-            case 0 -> new double[]{cx - R, cy + off}; // Đến từ W, đi Đông → lane Nam
-            case 1 -> new double[]{cx - off, cy - R}; // Đến từ N, đi Nam  → lane Tây
-            case 2 -> new double[]{cx + R, cy - off}; // Đến từ E, đi Tây  → lane Bắc
-            case 3 -> new double[]{cx + off, cy + R}; // Đến từ S, đi Bắc  → lane Đông
-            default -> new double[]{cx, cy};
-        };
-    }
-
-    /** Điểm xe RA ring: bên phải của cánh exit */
-    private double[] ringExitPoint(double cx, double cy, double R, double off, int dir) {
-        return switch (dir) {
-            case 0 -> new double[]{cx + R, cy + off}; // Ra Đông  → lane Nam
-            case 1 -> new double[]{cx - off, cy + R}; // Ra Nam   → lane Tây
-            case 2 -> new double[]{cx - R, cy - off}; // Ra Tây   → lane Bắc
-            case 3 -> new double[]{cx + off, cy - R}; // Ra Bắc   → lane Đông
-            default -> new double[]{cx, cy};
-        };
-    }
-
-    /** Điểm trên đường ra, đủ xa khỏi ring để xe tiếp tục đi thẳng */
-    private double[] roadExitPoint(double cx, double cy, double dist, int dir, double off) {
-        return switch (dir) {
-            case 0 -> new double[]{cx + dist, cy + off};
-            case 1 -> new double[]{cx - off, cy + dist};
-            case 2 -> new double[]{cx - dist, cy - off};
-            case 3 -> new double[]{cx + off, cy - dist};
-            default -> new double[]{cx, cy};
-        };
+        v.setWaypoints(wps);
     }
 }
-
 
 
 ===== FILE: C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\system\SpawnSystem.java =====
@@ -1826,28 +1802,35 @@ import model.traffic.TrafficLight;
 import model.vehicle.Vehicle;
 
 public class TrafficRuleSystem {
-    
+
     public void applyRules(List<Vehicle> vehicles, List<IntersectionNode> nodes) {
         for (Vehicle v : vehicles) {
-            
-            // ĐẶC QUYỀN: Hỏi xem bộ não của tài xế này có tuân thủ đèn giao thông không?
-        if (!v.getStrategy().obeysTrafficLight()) {
-            continue; 
-        }
-            IntersectionNode targetNode = null;
-            double minDist = 180; 
 
-            // 1. Tìm ngã tư gần nhất trước mặt
+            // ===== FIX QUAN TRỌNG =====
+            // Xe đang bám waypoint = đang LƯU THÔNG TRONG VÒNG XUYẾN.
+            // Tuyệt đối không để đèn đỏ khoá tốc độ về 0 giữa vòng
+            // (đây chính là nguyên nhân xe "dừng hẳn" ở ngã 5).
+            if (v.hasWaypoints()) continue;
+
+            // ĐẶC QUYỀN: Hỏi xem bộ não của tài xế này có tuân thủ đèn giao thông không?
+            if (!v.getStrategy().obeysTrafficLight()) {
+                continue;
+            }
+
+            IntersectionNode targetNode = null;
+            double minDist = 280; // phat hien som hon de FIVE_WAY co du khoang dung
+
+            // 1. Tim nga tu gan nhat truoc mat
             for (IntersectionNode node : nodes) {
                 double dx = node.getX() - v.getX();
                 double dy = node.getY() - v.getY();
-                
+
                 double rad = Math.toRadians(v.getAngle());
                 double dirX = Math.cos(rad);
                 double dirY = Math.sin(rad);
 
-                double axialDist = dx * dirX + dy * dirY; 
-                double lateralDist = Math.abs(dx * (-dirY) + dy * dirX); 
+                double axialDist = dx * dirX + dy * dirY;
+                double lateralDist = Math.abs(dx * (-dirY) + dy * dirX);
 
                 if (axialDist > 0 && axialDist < minDist && lateralDist < 100) {
                     minDist = axialDist;
@@ -1858,32 +1841,40 @@ public class TrafficRuleSystem {
             if (targetNode == null) continue;
 
             TrafficLight lightToObey = null;
-            
-            // 2. Chuyển đổi góc (Angle) sang Hướng để nhìn đúng đèn
+
+            // 2. Chuyen doi goc sang Huong de nhin dung den
             double angle = v.getAngle() % 360;
             if (angle < 0) angle += 360;
-            
-            if (angle >= 315 || angle < 45) { // Góc ~0: Xe đi từ Tây sang Đông -> Nhìn đèn Tây
+
+            // ===== FIX: cánh chéo Tây-Bắc của ngã 5 =====
+            // Xe từ cánh NW chạy hướng Đông-Nam (~45°) trước đây bị map
+            // nhầm vào lightNorth → đứng im suốt pha 4 (pha NW xanh).
+            if (targetNode.getType() == IntersectionNode.NodeType.FIVE_WAY
+                    && angle >= 25 && angle < 65) {
+                lightToObey = targetNode.getLightNW();
+            } else if (angle >= 315 || angle < 45) {
                 lightToObey = targetNode.getLightWest();
-            } else if (angle >= 45 && angle < 135) { // Góc ~90: Xe đi từ Bắc xuống Nam -> Nhìn đèn Bắc
+            } else if (angle >= 45 && angle < 135) {
                 lightToObey = targetNode.getLightNorth();
-            } else if (angle >= 135 && angle < 225) { // Góc ~180: Xe đi từ Đông sang Tây -> Nhìn đèn Đông
+            } else if (angle >= 135 && angle < 225) {
                 lightToObey = targetNode.getLightEast();
-            } else { // Góc ~270: Xe đi từ Nam lên Bắc -> Nhìn đèn Nam
+            } else {
                 lightToObey = targetNode.getLightSouth();
             }
 
             if (lightToObey == null) continue;
 
-            // 3. Phanh khi gặp đèn Đỏ hoặc Vàng
-            // stopDist: xe dừng sao cho đầu xe nằm TRƯỚC vạch dừng (halfW + 15px)
-            // halfW = ROAD_WIDTH/2 = 60. Tâm xe dừng ở 60+15+halfLength ≈ 60+15+20 = 95px từ tâm ngã tư
-            double stopDist = config.Constants.ROAD_WIDTH / 2 + 15 + v.getWidth() / 2;
+            // 3. Phanh khi gap den Do hoac Vang
+            // FIVE_WAY: vach dung tai ROUNDABOUT_RADIUS + 69 tu tam
+            double stopDist = (targetNode.getType() == IntersectionNode.NodeType.FIVE_WAY)
+                ? config.Constants.ROUNDABOUT_RADIUS + 69 + v.getWidth() / 2
+                : config.Constants.ROAD_WIDTH / 2 + 15 + v.getWidth() / 2;
+
             if (lightToObey.getPhase() == TrafficLight.Phase.RED
                     || lightToObey.getPhase() == TrafficLight.Phase.YELLOW) {
                 if (minDist <= stopDist + 5) {
                     v.setSpeed(0);
-                } else if (minDist < 160) {
+                } else if (minDist < stopDist + 65) {
                     double brakeStrength = Math.sqrt(Math.max(0, 2 * 0.08 * (minDist - stopDist)));
                     v.setSpeed(Math.min(v.getSpeed(), brakeStrength));
                 }
@@ -2309,18 +2300,596 @@ public class MainView {
 
 ===== FILE: C:\Users\VINH  - PC\Desktop\TrafficSimulationFX\src\main\java\view\MapRenderer.java =====
 
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
- */
 package view;
 
-/**
- *
- * @author VINH - PC
- */
+import config.Constants;
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.effect.BlendMode;
+import javafx.scene.paint.Color;
+import javafx.scene.shape.StrokeLineCap;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import model.Pedestrian;
+import model.map.CityMap;
+import model.map.IntersectionNode;
+import model.map.RoadEdge;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+
 public class MapRenderer {
-    
+
+    // =========================================================
+    // DATA CLASSES
+    // =========================================================
+
+    public static class StreetLight {
+        public final double x, y, faceAngle;
+        public StreetLight(double x, double y, double fa) { this.x = x; this.y = y; this.faceAngle = fa; }
+    }
+
+    public static class Decoration {
+        public enum Type { BUILDING, SHOP, HOUSE, TREE, PARK, PARKING, BUS_STOP, GAS_STATION }
+        public final Type type;
+        public final double x, y, w, h;
+        public Color c1, c2;
+        public boolean[][] windows;
+        public String label;
+        public final List<double[]> subs = new ArrayList<>();
+
+        public Decoration(Type t, double x, double y, double w, double h) {
+            this.type = t; this.x = x; this.y = y; this.w = w; this.h = h;
+        }
+    }
+
+    // =========================================================
+    // COLOUR PALETTES (static finals — no alloc per frame)
+    // =========================================================
+
+    private static final Color[] BLDG = {
+        Color.web("#c0a882"), Color.web("#8fa3c0"), Color.web("#b5c4a0"),
+        Color.web("#c4a0a0"), Color.web("#a0b5c4"), Color.web("#c4baa0")
+    };
+    private static final Color[] ROOF = {
+        Color.web("#7a6e5e"), Color.web("#5e6e7a"), Color.web("#6e7a5e"),
+        Color.web("#7a5e5e"), Color.web("#5e5e7a"), Color.web("#635d4e")
+    };
+    private static final Color[] SHOP_WALL = {
+        Color.web("#f5e6cc"), Color.web("#cce6f5"), Color.web("#e6ccf5"),
+        Color.web("#ccf5e6"), Color.web("#f5cccc"), Color.web("#fff0d4")
+    };
+    private static final Color[] AWNING = {
+        Color.web("#e74c3c"), Color.web("#3498db"), Color.web("#e67e22"),
+        Color.web("#2ecc71"), Color.web("#9b59b6"), Color.web("#e91e63")
+    };
+    private static final String[] LABELS = {
+        "Coffee", "Bakery", "Market", "Pho", "BBQ", "Bun bo", "Cafe", "Shop"
+    };
+    private static final Color[] WALL = {
+        Color.web("#f0e6d3"), Color.web("#d3e6f0"), Color.web("#e6d3f0"),
+        Color.web("#d3f0e6"), Color.web("#f0d3d3"), Color.web("#f5f0e6")
+    };
+    private static final Color[] HROOF = {
+        Color.web("#c0392b"), Color.web("#e74c3c"), Color.web("#8e44ad"),
+        Color.web("#d35400"), Color.web("#7f8c8d"), Color.web("#2c3e50")
+    };
+
+    // =========================================================
+    // GENERATION  (call once on map load — deterministic seed)
+    // =========================================================
+
+    public static List<Decoration> generateDecorations(CityMap map) {
+        long seed = 12345L;
+        for (IntersectionNode n : map.getNodes()) seed = seed * 31 + (long)(n.getX() * 997 + n.getY() * 31);
+        Random rng = new Random(seed);
+        List<Decoration> result = new ArrayList<>();
+        double hw = Constants.ROAD_WIDTH / 2, clear = hw + 28;
+
+        for (double gx = -500; gx < 2200; gx += 78) {
+            for (double gy = -600; gy < 1900; gy += 78) {
+                double cx = gx + (rng.nextDouble() - .5) * 44;
+                double cy = gy + (rng.nextDouble() - .5) * 44;
+                double minD = minDistToRoads(cx, cy, map);
+                if (minD < clear) continue;
+                double avail = minD - clear;
+                int roll = rng.nextInt(100);
+
+                if      (avail > 50 && roll < 18) addBuilding(result, cx, cy, avail, rng);
+                else if (avail > 35 && roll < 32) addShop   (result, cx, cy, avail, rng);
+                else if (avail > 28 && roll < 46) addHouse  (result, cx, cy, avail, rng);
+                else if (avail > 12 && roll < 68) addTree   (result, cx, cy, avail, rng);
+                else if (avail > 65 && roll < 74) addPark   (result, cx, cy, avail, rng);
+                else if (avail > 70 && roll < 79) addParking(result, cx, cy, avail, rng);
+                else if (avail > 18 && roll < 82) addBusStop(result, cx, cy);
+                else if (avail > 60 && roll < 85) addGas    (result, cx, cy, avail, rng);
+            }
+        }
+        return result;
+    }
+
+    private static void addBuilding(List<Decoration> out, double cx, double cy, double av, Random r) {
+        double w = 38 + r.nextInt(28), h = 45 + r.nextInt(50);
+        if (av < Math.max(w,h)/2 + 5) return;
+        Decoration d = new Decoration(Decoration.Type.BUILDING, cx-w/2, cy-h/2, w, h);
+        d.c1 = BLDG[r.nextInt(BLDG.length)];
+        d.c2 = ROOF[r.nextInt(ROOF.length)];
+        int rows = Math.max(2,(int)(h/11)), cols = Math.max(1,(int)(w/9));
+        d.windows = new boolean[rows][cols];
+        for (int i=0;i<rows;i++) for (int j=0;j<cols;j++) d.windows[i][j] = r.nextBoolean();
+        out.add(d);
+    }
+    private static void addShop(List<Decoration> out, double cx, double cy, double av, Random r) {
+        double w = 30 + r.nextInt(20), h = 20 + r.nextInt(14);
+        if (av < Math.max(w,h)/2 + 5) return;
+        Decoration d = new Decoration(Decoration.Type.SHOP, cx-w/2, cy-h/2, w, h);
+        d.c1 = SHOP_WALL[r.nextInt(SHOP_WALL.length)];
+        d.c2 = AWNING[r.nextInt(AWNING.length)];
+        d.label = LABELS[r.nextInt(LABELS.length)];
+        out.add(d);
+    }
+    private static void addHouse(List<Decoration> out, double cx, double cy, double av, Random r) {
+        double w = 26 + r.nextInt(14), h = 20 + r.nextInt(10);
+        if (av < Math.max(w,h)/2 + 5) return;
+        Decoration d = new Decoration(Decoration.Type.HOUSE, cx-w/2, cy-h/2, w, h);
+        d.c1 = WALL [r.nextInt(WALL .length)];
+        d.c2 = HROOF[r.nextInt(HROOF.length)];
+        out.add(d);
+    }
+    private static void addTree(List<Decoration> out, double cx, double cy, double av, Random r) {
+        double rad = 10 + r.nextInt(10);
+        if (av < rad + 5) return;
+        out.add(new Decoration(Decoration.Type.TREE, cx, cy, rad, rad));
+    }
+    private static void addPark(List<Decoration> out, double cx, double cy, double av, Random r) {
+        double w = 65 + r.nextInt(40), h = 55 + r.nextInt(35);
+        if (av < Math.max(w,h)/2 + 5) return;
+        Decoration d = new Decoration(Decoration.Type.PARK, cx-w/2, cy-h/2, w, h);
+        int n = 2 + r.nextInt(4);
+        for (int i=0;i<n;i++) d.subs.add(new double[]{
+            cx-w/2+10+r.nextDouble()*(w-20), cy-h/2+10+r.nextDouble()*(h-20), 6+r.nextInt(6)});
+        d.subs.add(new double[]{cx-10, cy+h/2-15, -1}); // bench marker
+        out.add(d);
+    }
+    private static void addParking(List<Decoration> out, double cx, double cy, double av, Random r) {
+        double w = 82, h = 62;
+        if (av < Math.max(w,h)/2 + 5) return;
+        Decoration d = new Decoration(Decoration.Type.PARKING, cx-w/2, cy-h/2, w, h);
+        for (int i=0;i<3;i++) d.subs.add(new double[]{cx-w/2+13+i*25, cy, r.nextInt(6)*1.0});
+        out.add(d);
+    }
+    private static void addBusStop(List<Decoration> out, double cx, double cy) {
+        out.add(new Decoration(Decoration.Type.BUS_STOP, cx, cy, 22, 32));
+    }
+    private static void addGas(List<Decoration> out, double cx, double cy, double av, Random r) {
+        double w = 72, h = 52;
+        if (av < Math.max(w,h)/2 + 5) return;
+        Decoration d = new Decoration(Decoration.Type.GAS_STATION, cx-w/2, cy-h/2, w, h);
+        d.c1 = Color.web("#ecf0f1"); d.c2 = Color.web("#e74c3c");
+        out.add(d);
+    }
+
+    // ---- Street lights ----
+
+    public static List<StreetLight> generateStreetLights(CityMap map) {
+        List<StreetLight> lights = new ArrayList<>();
+        double off = Constants.ROAD_WIDTH / 2 + 12, spacing = 150;
+        for (RoadEdge road : map.getRoads()) {
+            double sx = road.getStartNode().getX(), sy = road.getStartNode().getY();
+            double ex = road.getEndNode().getX(),   ey = road.getEndNode().getY();
+            double len = Math.hypot(ex-sx, ey-sy);
+            if (len < 1) continue;
+            double dx = (ex-sx)/len, dy = (ey-sy)/len, px = -dy, py = dx;
+            int cnt = 0;
+            for (double t = spacing/2; t < len - spacing/4; t += spacing, cnt++) {
+                double bx = sx+dx*t, by = sy+dy*t;
+                double side = (cnt % 2 == 0) ? 1 : -1;
+                double fa = Math.toDegrees(Math.atan2(-py*side, -px*side));
+                lights.add(new StreetLight(bx + px*off*side, by + py*off*side, fa));
+            }
+        }
+        return lights;
+    }
+
+    // ---- Pedestrians ----
+
+    public static List<Pedestrian> generatePedestrians(CityMap map) {
+        List<Pedestrian> peds = new ArrayList<>();
+        double sw = Constants.ROAD_WIDTH / 2 + 14;
+        int idx = 0;
+        for (RoadEdge road : map.getRoads()) {
+            if (road.getStartNode().isSpawnNode() || road.getEndNode().isSpawnNode()) continue;
+            double sx = road.getStartNode().getX(), sy = road.getStartNode().getY();
+            double ex = road.getEndNode().getX(),   ey = road.getEndNode().getY();
+            double len = Math.hypot(ex-sx, ey-sy);
+            if (len < 60 || peds.size() >= 10) break;
+            double dx = (ex-sx)/len, dy = (ey-sy)/len, px = -dy, py = dx;
+            double side = (idx % 2 == 0) ? 1 : -1;
+            peds.add(new Pedestrian(
+                sx + px*sw*side + dx*20, sy + py*sw*side + dy*20,
+                ex + px*sw*side - dx*20, ey + py*sw*side - dy*20, idx));
+            idx++;
+        }
+        return peds;
+    }
+
+    // =========================================================
+    // GEOMETRY HELPERS
+    // =========================================================
+
+    private static double minDistToRoads(double px, double py, CityMap map) {
+        double min = Double.MAX_VALUE;
+        for (RoadEdge r : map.getRoads())
+            min = Math.min(min, pointSegDist(px, py,
+                r.getStartNode().getX(), r.getStartNode().getY(),
+                r.getEndNode().getX(),   r.getEndNode().getY()));
+        for (IntersectionNode n : map.getNodes())
+            min = Math.min(min, Math.hypot(px-n.getX(), py-n.getY()));
+        return min;
+    }
+
+    private static double pointSegDist(double px, double py, double ax, double ay, double bx, double by) {
+        double dx = bx-ax, dy = by-ay, len2 = dx*dx+dy*dy;
+        if (len2 < .001) return Math.hypot(px-ax, py-ay);
+        double t = Math.max(0, Math.min(1, ((px-ax)*dx+(py-ay)*dy)/len2));
+        return Math.hypot(px-(ax+t*dx), py-(ay+t*dy));
+    }
+
+    // =========================================================
+    // RENDER — BACKGROUND
+    // =========================================================
+
+    public static void drawBackground(GraphicsContext gc, double camX, double camY) {
+        gc.setFill(Color.web("#E8E6E0"));
+        gc.fillRect(camX - 5000, camY - 5000, 15000, 15000);
+    }
+
+    // =========================================================
+    // RENDER — SIDEWALKS
+    // =========================================================
+
+    public static void drawSidewalks(GraphicsContext gc, CityMap map) {
+        gc.setLineCap(StrokeLineCap.BUTT);
+        gc.setStroke(Color.web("#C8C4B8"));
+        gc.setLineWidth(Constants.ROAD_WIDTH + 24);
+        for (RoadEdge r : map.getRoads()) {
+            if (r.getType() == RoadEdge.RoadType.ALLEY) continue;
+            gc.strokeLine(r.getStartNode().getX(), r.getStartNode().getY(),
+                          r.getEndNode().getX(),   r.getEndNode().getY());
+        }
+        // Intersection fill
+        double hw = Constants.ROAD_WIDTH / 2 + 12;
+        for (IntersectionNode n : map.getNodes()) {
+            if (n.isSpawnNode() || n.getType() == IntersectionNode.NodeType.FIVE_WAY) continue;
+            gc.setFill(Color.web("#C8C4B8"));
+            gc.fillRect(n.getX() - hw, n.getY() - hw, hw*2, hw*2);
+        }
+    }
+
+    // =========================================================
+    // RENDER — ROADS + LANE MARKINGS
+    // =========================================================
+
+    public static void drawRoads(GraphicsContext gc, CityMap map) {
+        for (RoadEdge road : map.getRoads()) {
+            double sx = road.getStartNode().getX(), sy = road.getStartNode().getY();
+            double ex = road.getEndNode().getX(),   ey = road.getEndNode().getY();
+            double rw = road.getWidth();
+            gc.setStroke(Color.web("#34495e"));
+            gc.setLineWidth(rw);
+            gc.setLineCap(StrokeLineCap.BUTT);
+            gc.strokeLine(sx, sy, ex, ey);
+
+            if (road.getType() != RoadEdge.RoadType.ALLEY) {
+                gc.setStroke(Color.web("#f1c40f")); gc.setLineWidth(2);
+                if (road.getType() == RoadEdge.RoadType.AVENUE) {
+                    gc.setLineDashes(null);
+                    gc.strokeLine(sx+2, sy+2, ex+2, ey+2);
+                    gc.strokeLine(sx-2, sy-2, ex-2, ey-2);
+                    drawDashedOffset(gc, sx, sy, ex, ey,  rw/4);
+                    drawDashedOffset(gc, sx, sy, ex, ey, -rw/4);
+                } else {
+                    gc.setLineDashes(15, 15); gc.strokeLine(sx, sy, ex, ey); gc.setLineDashes(null);
+                }
+            }
+        }
+    }
+
+    private static void drawDashedOffset(GraphicsContext gc, double sx, double sy, double ex, double ey, double off) {
+        double a = Math.atan2(ey-sy, ex-sx), p = Math.PI/2;
+        double ox = Math.cos(a+p)*off, oy = Math.sin(a+p)*off;
+        gc.setStroke(Color.WHITE); gc.setLineWidth(2); gc.setLineDashes(15, 15);
+        gc.strokeLine(sx+ox, sy+oy, ex+ox, ey+oy);
+        gc.setLineDashes(null);
+    }
+
+    // =========================================================
+    // RENDER — INTERSECTION DETAILS  (zebra, stop lines, bùng binh)
+    // =========================================================
+
+    public static void drawIntersectionDetails(GraphicsContext gc, CityMap map) {
+        double halfW = Constants.ROAD_WIDTH / 2;
+        for (IntersectionNode node : map.getNodes()) {
+            double nX = node.getX(), nY = node.getY();
+
+            if (node.getType() == IntersectionNode.NodeType.FIVE_WAY) {
+                double islandR  = 40;
+                double junctionR = Constants.ROUNDABOUT_RADIUS;
+                double ringR     = (islandR + junctionR) / 2.0;
+
+                gc.setFill(Color.web("#34495e"));
+                gc.fillOval(nX-junctionR, nY-junctionR, junctionR*2, junctionR*2);
+
+                gc.setStroke(Color.WHITE); gc.setLineWidth(2); gc.setLineDashes(12, 10);
+                gc.strokeOval(nX-ringR, nY-ringR, ringR*2, ringR*2);
+                gc.setLineDashes(null);
+
+                gc.setFill(Color.web("#2ecc71"));
+                gc.fillOval(nX-islandR, nY-islandR, islandR*2, islandR*2);
+                gc.setStroke(Color.WHITE); gc.setLineWidth(2);
+                gc.strokeOval(nX-islandR, nY-islandR, islandR*2, islandR*2);
+
+                drawArmMarkings(gc, nX, nY,   0, junctionR, halfW);
+                drawArmMarkings(gc, nX, nY,  90, junctionR, halfW);
+                drawArmMarkings(gc, nX, nY, 180, junctionR, halfW);
+                drawArmMarkings(gc, nX, nY, 270, junctionR, halfW);
+                if (node.isHasNW()) drawArmMarkings(gc, nX, nY, 225, junctionR, halfW);
+
+            } else {
+                // Clear stray road lines
+                gc.setFill(Color.web("#34495e"));
+                gc.fillRect(nX-halfW, nY-halfW, Constants.ROAD_WIDTH, Constants.ROAD_WIDTH);
+
+                boolean hasN = node.isHasNorth(), hasS = node.isHasSouth(),
+                        hasE = node.isHasEast(),  hasW = node.isHasWest();
+
+                // Zebra crossings (dashed, offset +5 — closer to intersection)
+                gc.setStroke(Color.WHITE); gc.setLineWidth(6); gc.setLineDashes(4, 6);
+                if (hasN) gc.strokeLine(nX-halfW+5, nY-halfW-5, nX+halfW-5, nY-halfW-5);
+                if (hasS) gc.strokeLine(nX-halfW+5, nY+halfW+5, nX+halfW-5, nY+halfW+5);
+                if (hasW) gc.strokeLine(nX-halfW-5, nY-halfW+5, nX-halfW-5, nY+halfW-5);
+                if (hasE) gc.strokeLine(nX+halfW+5, nY-halfW+5, nX+halfW+5, nY+halfW-5);
+                gc.setLineDashes(null);
+
+                // Stop lines (solid, offset +15 — farther from intersection)
+                gc.setStroke(Color.WHITE); gc.setLineWidth(3);
+                if (hasN) gc.strokeLine(nX-halfW, nY-halfW-15, nX,       nY-halfW-15);
+                if (hasS) gc.strokeLine(nX,       nY+halfW+15, nX+halfW, nY+halfW+15);
+                if (hasW) gc.strokeLine(nX-halfW-15, nY,       nX-halfW-15, nY+halfW);
+                if (hasE) gc.strokeLine(nX+halfW+15, nY-halfW, nX+halfW+15, nY);
+
+                // Guide arcs (graphic mode only)
+                if (!VehicleRenderer.BASIC_MODE) {
+                    gc.setStroke(Color.rgb(241, 196, 15, 0.4)); gc.setLineWidth(1.5); gc.setLineDashes(5, 10);
+                    gc.strokeArc(nX-halfW, nY-halfW, halfW, halfW, 270, 90, javafx.scene.shape.ArcType.OPEN);
+                    gc.strokeArc(nX,       nY-halfW, halfW, halfW, 180, 90, javafx.scene.shape.ArcType.OPEN);
+                    gc.strokeArc(nX-halfW, nY,       halfW, halfW,   0, 90, javafx.scene.shape.ArcType.OPEN);
+                    gc.strokeArc(nX,       nY,       halfW, halfW,  90, 90, javafx.scene.shape.ArcType.OPEN);
+                    gc.setLineDashes(null);
+                }
+            }
+        }
+    }
+
+    private static void drawArmMarkings(GraphicsContext gc, double cx, double cy,
+                                        double angDeg, double junctionR, double halfW) {
+        double a = Math.toRadians(angDeg);
+        double ux = Math.cos(a), uy = Math.sin(a);
+        double px = uy, py = -ux; // perpendicular
+
+        double zd = junctionR + 55, zx = cx+ux*zd, zy = cy+uy*zd;
+        gc.setStroke(Color.WHITE); gc.setLineWidth(6); gc.setLineDashes(4, 6);
+        gc.strokeLine(zx-px*halfW, zy-py*halfW, zx+px*halfW, zy+py*halfW);
+        gc.setLineDashes(null);
+
+        double sd = junctionR + 69, sx = cx+ux*sd, sy = cy+uy*sd;
+        gc.setLineWidth(3);
+        gc.strokeLine(sx, sy, sx+px*halfW, sy+py*halfW);
+    }
+
+    // =========================================================
+    // RENDER — DECORATIONS (ground level: parks, parking)
+    // =========================================================
+
+    public static void drawDecorationsGround(GraphicsContext gc, List<Decoration> decs) {
+        if (VehicleRenderer.BASIC_MODE) return;
+        for (Decoration d : decs) {
+            if (d.type == Decoration.Type.PARK)    drawPark   (gc, d);
+            if (d.type == Decoration.Type.PARKING) drawParking(gc, d);
+        }
+    }
+
+    // =========================================================
+    // RENDER — DECORATIONS (elevated: buildings, trees, shops)
+    // =========================================================
+
+    public static void drawDecorationsAbove(GraphicsContext gc, List<Decoration> decs, double darkness) {
+        if (VehicleRenderer.BASIC_MODE) return;
+        for (Decoration d : decs) {
+            switch (d.type) {
+                case BUILDING    -> drawBuilding  (gc, d, darkness);
+                case SHOP        -> drawShop      (gc, d);
+                case HOUSE       -> drawHouse     (gc, d);
+                case TREE        -> drawTree      (gc, d);
+                case BUS_STOP    -> drawBusStop   (gc, d);
+                case GAS_STATION -> drawGasStation(gc, d);
+                default -> {}
+            }
+        }
+    }
+
+    // ---- individual draw helpers ----
+
+    private static void drawBuilding(GraphicsContext gc, Decoration d, double darkness) {
+        gc.setFill(Color.rgb(0,0,0, 0.15)); gc.fillRect(d.x+5, d.y+8, d.w, d.h);
+        gc.setFill(d.c1); gc.fillRect(d.x, d.y, d.w, d.h);
+        gc.setFill(d.c2); gc.fillRect(d.x, d.y, d.w, 5);
+        if (d.windows != null) {
+            int rows = d.windows.length, cols = d.windows[0].length;
+            double ww = (d.w-4)/cols, wh = (d.h-8)/rows;
+            for (int r=0; r<rows; r++) {
+                for (int c=0; c<cols; c++) {
+                    double wx = d.x+2+c*ww+1, wy = d.y+7+r*wh+1;
+                    double ws = Math.min(ww-2, wh-2);
+                    if (ws < 2) continue;
+                    boolean lit = d.windows[r][c];
+                    if (darkness > 0.4 && lit)  gc.setFill(Color.rgb(255,230,150, 0.85+0.15*darkness));
+                    else if (darkness > 0.4)    gc.setFill(Color.rgb(20, 30, 50, 0.75));
+                    else                         gc.setFill(Color.rgb(180,210,230, 0.7));
+                    gc.fillRect(wx, wy, ws, ws);
+                }
+            }
+        }
+        gc.setStroke(d.c1.darker()); gc.setLineWidth(0.5); gc.strokeRect(d.x, d.y, d.w, d.h);
+    }
+
+    private static void drawShop(GraphicsContext gc, Decoration d) {
+        gc.setFill(Color.rgb(0,0,0,0.15)); gc.fillRect(d.x+4, d.y+5, d.w, d.h);
+        gc.setFill(d.c1); gc.fillRect(d.x, d.y, d.w, d.h);
+        // Striped awning at bottom
+        int strips = Math.max(2,(int)(d.w/6));
+        for (int i=0; i<strips; i++) {
+            gc.setFill(i%2==0 ? d.c2 : d.c2.brighter());
+            gc.fillRect(d.x+i*d.w/strips, d.y+d.h-6, d.w/strips+1, 6);
+        }
+        if (d.label != null) {
+            gc.setFill(Color.web("#2c3e50"));
+            gc.setFont(Font.font("Arial", FontWeight.BOLD, 7));
+            gc.fillText(d.label, d.x+3, d.y+d.h/2+3);
+        }
+        gc.setStroke(Color.web("#bdc3c7")); gc.setLineWidth(0.5); gc.strokeRect(d.x, d.y, d.w, d.h);
+    }
+
+    private static void drawHouse(GraphicsContext gc, Decoration d) {
+        gc.setFill(Color.rgb(0,0,0,0.15)); gc.fillRect(d.x+4, d.y+5, d.w, d.h);
+        gc.setFill(d.c1); gc.fillRect(d.x, d.y, d.w, d.h);
+        // Pitched roof
+        double[] rx = {d.x-3, d.x+d.w+3, d.x+d.w/2};
+        double[] ry = {d.y,   d.y,        d.y-d.h*0.38};
+        gc.setFill(d.c2); gc.fillPolygon(rx, ry, 3);
+        gc.setFill(Color.web("#8B6914")); gc.fillRect(d.x+d.w/2-3, d.y+d.h-8, 6, 8);
+        gc.setStroke(d.c1.darker()); gc.setLineWidth(0.5); gc.strokeRect(d.x, d.y, d.w, d.h);
+    }
+
+    private static void drawTree(GraphicsContext gc, Decoration d) {
+        double tx = d.x, ty = d.y, r = d.w;
+        gc.setFill(Color.rgb(0,0,0,0.15)); gc.fillOval(tx-r+4, ty+r*0.2, r*2-4, r*0.8);
+        gc.setStroke(Color.web("#7d5a3c")); gc.setLineWidth(3);
+        gc.strokeLine(tx, ty+r*0.3, tx, ty+r*1.05);
+        gc.setFill(Color.web("#1e8449")); gc.fillOval(tx-r*0.85, ty-r*0.85, r*1.7, r*1.7);
+        gc.setFill(Color.web("#27ae60")); gc.fillOval(tx-r*0.70, ty-r*0.95, r*1.45, r*1.45);
+        gc.setFill(Color.web("#58d68d")); gc.fillOval(tx-r*0.42, ty-r*0.88, r*0.85, r*0.85);
+    }
+
+    private static void drawPark(GraphicsContext gc, Decoration d) {
+        gc.setFill(Color.web("#58d68d", 0.65)); gc.fillRoundRect(d.x, d.y, d.w, d.h, 8, 8);
+        gc.setStroke(Color.web("#27ae60")); gc.setLineWidth(1); gc.strokeRoundRect(d.x, d.y, d.w, d.h, 8, 8);
+        gc.setFill(Color.web("#d5b880", 0.5));
+        gc.fillRect(d.x+d.w/2-5, d.y, 10, d.h); // path
+        if (d.w > 80) {
+            gc.setFill(Color.web("#3498db", 0.45));
+            gc.fillOval(d.x+d.w*0.6, d.y+d.h*0.3, d.w*0.25, d.h*0.3);
+        }
+        for (double[] s : d.subs) {
+            if (s[2] < 0) {
+                gc.setFill(Color.web("#8B6914")); gc.fillRect(s[0]-8, s[1]-3, 16, 4);
+            } else {
+                double tr = s[2];
+                gc.setFill(Color.web("#27ae60")); gc.fillOval(s[0]-tr, s[1]-tr, tr*2, tr*2);
+                gc.setFill(Color.web("#2ecc71")); gc.fillOval(s[0]-tr*.7, s[1]-tr*.9, tr*1.4, tr*1.4);
+            }
+        }
+    }
+
+    private static void drawParking(GraphicsContext gc, Decoration d) {
+        gc.setFill(Color.web("#bdc3c7")); gc.fillRect(d.x, d.y, d.w, d.h);
+        gc.setStroke(Color.WHITE); gc.setLineWidth(1);
+        int slots = 4;
+        for (int i=0; i<=slots; i++) gc.strokeLine(d.x+i*d.w/slots, d.y, d.x+i*d.w/slots, d.y+d.h);
+        gc.strokeLine(d.x, d.y, d.x+d.w, d.y);
+        gc.strokeLine(d.x, d.y+d.h, d.x+d.w, d.y+d.h);
+        Color[] cc = {Color.web("#e74c3c"),Color.web("#3498db"),Color.web("#2ecc71"),
+                      Color.web("#e67e22"),Color.web("#9b59b6"),Color.web("#95a5a6")};
+        for (double[] s : d.subs) {
+            gc.setFill(cc[(int)s[2] % cc.length]);
+            gc.fillRoundRect(s[0]-9, s[1]-5, 18, 10, 3, 3);
+        }
+        gc.setFill(Color.web("#7f8c8d")); gc.setFont(Font.font("Arial",FontWeight.BOLD,8));
+        gc.fillText("P", d.x+d.w/2-3, d.y-3);
+    }
+
+    private static void drawBusStop(GraphicsContext gc, Decoration d) {
+        gc.setStroke(Color.web("#7f8c8d")); gc.setLineWidth(2.5);
+        gc.strokeLine(d.x, d.y, d.x, d.y+d.h);
+        gc.setFill(Color.web("#3498db",0.75)); gc.fillRect(d.x-10, d.y, 20, 5);
+        gc.setFill(Color.web("#8B6914")); gc.fillRect(d.x-8, d.y+d.h-8, 16, 3);
+        gc.setFill(Color.web("#e74c3c")); gc.fillRect(d.x-4, d.y+7, 8, 10);
+        gc.setFill(Color.WHITE); gc.setFont(Font.font("Arial",4)); gc.fillText("BUS", d.x-4, d.y+15);
+    }
+
+    private static void drawGasStation(GraphicsContext gc, Decoration d) {
+        gc.setFill(d.c1); gc.fillRect(d.x, d.y, d.w, d.h*0.5);
+        gc.setFill(d.c2); gc.fillRect(d.x, d.y, d.w, 5);
+        for (int i=0; i<2; i++) {
+            double px2 = d.x+d.w*0.25+i*d.w*0.5;
+            gc.setFill(Color.web("#c0392b")); gc.fillRect(px2-5, d.y+d.h*.5, 10, 15);
+            gc.setFill(Color.WHITE); gc.fillRect(px2-3, d.y+d.h*.5+3, 6, 5);
+        }
+        gc.setFill(d.c2); gc.fillRect(d.x+d.w/2-10, d.y+d.h*.6, 20, 12);
+        gc.setFill(Color.WHITE); gc.setFont(Font.font("Arial",FontWeight.BOLD,7));
+        gc.fillText("GAS", d.x+d.w/2-8, d.y+d.h*.6+9);
+    }
+
+    // =========================================================
+    // RENDER — STREET LIGHTS
+    // =========================================================
+
+    public static void drawStreetLightPoles(GraphicsContext gc, List<StreetLight> lights) {
+        if (VehicleRenderer.BASIC_MODE) return;
+        for (StreetLight sl : lights) {
+            gc.setStroke(Color.web("#606060")); gc.setLineWidth(1.8);
+            gc.strokeLine(sl.x, sl.y+12, sl.x, sl.y);
+            gc.setFill(Color.web("#808080")); gc.fillOval(sl.x-3, sl.y-3, 6, 6);
+        }
+    }
+
+    public static void drawStreetLightGlow(GraphicsContext gc, List<StreetLight> lights, double darkness) {
+        if (VehicleRenderer.BASIC_MODE || darkness < 0.3) return;
+        double alpha = (darkness - 0.3) / 0.7 * 0.13;
+        for (StreetLight sl : lights) {
+            gc.setGlobalBlendMode(BlendMode.ADD);
+            gc.setFill(Color.rgb(255, 215, 80, alpha));
+            gc.fillOval(sl.x-44, sl.y-8, 88, 50);
+            gc.setGlobalBlendMode(BlendMode.SRC_OVER);
+            gc.setFill(Color.rgb(255, 235, 100, Math.min(1.0, (darkness-0.3)*2)));
+            gc.fillOval(sl.x-3, sl.y-3, 6, 6);
+        }
+    }
+
+    // =========================================================
+    // RENDER — PEDESTRIANS
+    // =========================================================
+
+    public static void drawPedestrians(GraphicsContext gc, List<Pedestrian> peds) {
+        for (Pedestrian p : peds) {
+            gc.save();
+            gc.translate(p.getX(), p.getY());
+            gc.rotate(p.getAngle());
+            if (VehicleRenderer.BASIC_MODE) {
+                gc.setFill(Color.web("#555555")); gc.fillOval(-3,-3,6,6);
+            } else {
+                gc.setFill(Color.rgb(0,0,0,0.15)); gc.fillOval(-4,4,8,3);
+                double sw = Math.sin(p.getAnimStep()*0.15)*3.0;
+                gc.setStroke(Color.web("#444444")); gc.setLineWidth(1.5);
+                gc.strokeLine(0, 2, -2, 6+sw);
+                gc.strokeLine(0, 2,  2, 6-sw);
+                gc.setFill(p.getShirtColor()); gc.fillRoundRect(-3,-3,6,6,2,2);
+                gc.setFill(Color.web("#f0c080")); gc.fillOval(-3,-9,6,6);
+                gc.setFill(Color.rgb(255,255,255,0.3)); gc.fillOval(-2,-9,3,2);
+            }
+            gc.restore();
+        }
+    }
 }
 
 
@@ -2364,48 +2933,24 @@ public class VehicleRenderer {
             gc.fillText(getVehicleLabel(v), -v.getWidth() / 2 + 2, 3);
 
         } else {
-            // --- CHẾ ĐỘ ĐỒ HỌA: Render chi tiết ---
-            Color bodyColor = v.getColor();
+            // --- CHẾ ĐỘ ĐỒ HỌA ---
+            double hw = v.getWidth() / 2.0, hh = v.getHeight() / 2.0;
 
-            // Thân xe (bo góc)
-            gc.setFill(bodyColor);
-            gc.fillRoundRect(-v.getWidth() / 2, -v.getHeight() / 2, v.getWidth(), v.getHeight(), 8, 8);
+            // Bóng đổ gầm xe
+            gc.setFill(Color.rgb(0, 0, 0, 0.20));
+            gc.fillOval(-hw + 3, hh - 1, hw * 2 - 6, hh + 3);
 
-            // Highlight phía trên (phản quang mái xe)
-            gc.setFill(Color.WHITE.deriveColor(0, 1, 1, 0.18));
-            gc.fillRoundRect(-v.getWidth() / 2 + 1, -v.getHeight() / 2 + 1,
-                    v.getWidth() - 2, v.getHeight() / 2 - 1, 6, 6);
-
-            // Kính lái (màu xanh lam nhạt)
-            gc.setFill(Color.web("#87ceeb", 0.85));
-            gc.fillRoundRect(v.getWidth() / 4 - 2, -v.getHeight() / 2 + 2,
-                    9, v.getHeight() - 4, 3, 3);
-
-            // Kính hậu (nhỏ hơn)
-            gc.setFill(Color.web("#87ceeb", 0.5));
-            gc.fillRect(-v.getWidth() / 2 + 3, -v.getHeight() / 2 + 3,
-                    6, v.getHeight() - 6);
-
-            // Logo chữ thập đỏ cho xe cứu thương & cứu hỏa
-            if (v instanceof EmergencyVehicle) {
-                gc.setFill(Color.RED.deriveColor(0, 1, 1, 0.9));
-                double cx = -v.getWidth() / 6;
-                double cy2 = 0;
-                gc.fillRect(cx - 1.5, -v.getHeight() / 2 + 4, 3, v.getHeight() - 8); // Dọc
-                gc.fillRect(cx - 5, cy2 - 1.5, 10, 3);                                // Ngang
-            }
-
-            // Sọc đỏ xe cứu hỏa
             if (v instanceof FireTruck) {
-                gc.setFill(Color.WHITE.deriveColor(0, 1, 1, 0.4));
-                gc.fillRect(-v.getWidth() / 2 + 5, -v.getHeight() / 2 + 2, 4, v.getHeight() - 4);
-                gc.fillRect(-v.getWidth() / 2 + 12, -v.getHeight() / 2 + 2, 4, v.getHeight() - 4);
+                drawFireTruck(gc, v, hw, hh);
+            } else if (v instanceof EmergencyVehicle) {
+                drawAmbulance(gc, v, hw, hh);
+            } else if (v instanceof Bicycle) {
+                drawBicycle(gc, v, hw, hh);
+            } else if (v instanceof Motorbike) {
+                drawMotorbike(gc, v, hw, hh);
+            } else {
+                drawCar(gc, v, hw, hh);
             }
-
-            // Viền xe (outline)
-            gc.setStroke(bodyColor.darker().darker());
-            gc.setLineWidth(0.8);
-            gc.strokeRoundRect(-v.getWidth() / 2, -v.getHeight() / 2, v.getWidth(), v.getHeight(), 8, 8);
         }
 
         gc.restore();
@@ -2419,12 +2964,12 @@ public class VehicleRenderer {
         gc.translate(v.getX(), v.getY());
         gc.rotate(v.getAngle());
 
-        // 1. Đèn pha (headlights) - chỉ bật khi trời tối
+        // 1. Đèn pha (headlights) - chỉ bật khi trời tối, kích thước nhỏ vừa nhìn
         if (darkness > 0.2) {
             gc.setGlobalBlendMode(BlendMode.ADD);
-            gc.setFill(Color.rgb(255, 255, 100, 0.4 * darkness));
-            double[] hx = {v.getWidth() / 2, v.getWidth() / 2 + 130, v.getWidth() / 2 + 130};
-            double[] hy = {0, -55, 55};
+            gc.setFill(Color.rgb(255, 255, 100, 0.55 * darkness));
+            double[] hx = {v.getWidth() / 2, v.getWidth() / 2 + 28, v.getWidth() / 2 + 28};
+            double[] hy = {0, -9, 9};
             gc.fillPolygon(hx, hy, 3);
             gc.setGlobalBlendMode(BlendMode.SRC_OVER);
         }
@@ -2469,13 +3014,143 @@ public class VehicleRenderer {
     }
 
     // =====================================================
+    // VEHICLE DETAIL HELPERS (graphic mode)
+    // =====================================================
+
+    private static void drawCar(GraphicsContext gc, Vehicle v, double hw, double hh) {
+        Color body = v.getColor();
+        // 4 wheels
+        gc.setFill(Color.web("#1a1a1a"));
+        double wl = 7, wt = 4, wfx = hw - 8;
+        gc.fillRoundRect( wfx - wl/2,  hh - wt/2, wl, wt, 2, 2); // front-right
+        gc.fillRoundRect( wfx - wl/2, -hh - wt/2, wl, wt, 2, 2); // front-left
+        gc.fillRoundRect(-wfx - wl/2,  hh - wt/2, wl, wt, 2, 2); // rear-right
+        gc.fillRoundRect(-wfx - wl/2, -hh - wt/2, wl, wt, 2, 2); // rear-left
+        // Body
+        gc.setFill(body); gc.fillRoundRect(-hw, -hh, hw*2, hh*2, 8, 8);
+        // Roof highlight
+        gc.setFill(Color.WHITE.deriveColor(0,1,1,0.18));
+        gc.fillRoundRect(-hw+1, -hh+1, hw*2-2, hh-1, 6, 6);
+        // Windshield
+        gc.setFill(Color.web("#87ceeb", 0.85));
+        gc.fillRoundRect(hw*0.38, -hh+2, hw*0.52, hh*2-4, 3, 3);
+        // Rear window
+        gc.setFill(Color.web("#87ceeb", 0.55));
+        gc.fillRect(-hw+2, -hh+3, hw*0.35, hh*2-6);
+        // Side mirrors
+        gc.setFill(body.darker());
+        gc.fillRect(hw*0.25-1, -hh-2, 4, 2);
+        gc.fillRect(hw*0.25-1,  hh,   4, 2);
+        // Headlights
+        gc.setFill(Color.web("#fffde0")); gc.fillOval(hw-4, -hh+2, 4, 4);
+        gc.setFill(Color.web("#fffde0")); gc.fillOval(hw-4,  hh-6, 4, 4);
+        // Taillights
+        gc.setFill(Color.web("#ff4444")); gc.fillOval(-hw, -hh+2, 4, 4);
+        gc.setFill(Color.web("#ff4444")); gc.fillOval(-hw,  hh-6, 4, 4);
+        // Outline
+        gc.setStroke(body.darker().darker()); gc.setLineWidth(0.8);
+        gc.strokeRoundRect(-hw, -hh, hw*2, hh*2, 8, 8);
+    }
+
+    private static void drawMotorbike(GraphicsContext gc, Vehicle v, double hw, double hh) {
+        Color body = v.getColor();
+        // Wheels
+        gc.setFill(Color.web("#1a1a1a"));
+        gc.fillOval( hw - 5, -3, 6, 6);  // front
+        gc.fillOval(-hw,     -3, 6, 6);  // rear
+        // Handlebar
+        gc.setStroke(Color.web("#888888")); gc.setLineWidth(1.5);
+        gc.strokeLine(hw*0.55, -hh, hw*0.55, hh);
+        // Frame/body
+        gc.setFill(body); gc.fillRoundRect(-hw+4, -hh*0.6, hw*2-8, hh*1.2, 4, 4);
+        gc.setFill(body.brighter());
+        gc.fillRect(-hw+5, -hh*0.55, (hw*2-10)*0.5, hh*1.1);
+        // Rider helmet
+        gc.setFill(Color.web("#2c3e50")); gc.fillOval(-5, -hh-5, 10, 8);
+        // Rider shoulders
+        gc.setFill(Color.web("#555555")); gc.fillRect(-4, -hh+1, 8, 5);
+        gc.setStroke(body.darker()); gc.setLineWidth(0.5);
+        gc.strokeRoundRect(-hw+4, -hh*0.6, hw*2-8, hh*1.2, 4, 4);
+    }
+
+    private static void drawBicycle(GraphicsContext gc, Vehicle v, double hw, double hh) {
+        // Wheels (thin ring style)
+        gc.setStroke(Color.web("#222222")); gc.setLineWidth(1.8);
+        gc.strokeOval( hw-5, -4, 8, 8);
+        gc.strokeOval(-hw-3, -4, 8, 8);
+        // Frame
+        gc.setStroke(Color.web("#888888")); gc.setLineWidth(1.2);
+        gc.strokeLine(-hw+4, 0, hw-2, -hh+1);
+        gc.strokeLine(-hw+4, 0, hw-2,  hh-1);
+        gc.strokeLine(-hw+4, 0, hw-6,  0);
+        // Handlebar
+        gc.strokeLine(hw-5, -hh, hw-5, hh);
+        // Rider
+        gc.setFill(v.getColor()); gc.fillOval(-3, -hh, 6, 6); // helmet
+        gc.setFill(Color.web("#555555")); gc.fillRect(-3, -hh+5, 6, 4); // body
+    }
+
+    private static void drawAmbulance(GraphicsContext gc, Vehicle v, double hw, double hh) {
+        // 4 wheels
+        gc.setFill(Color.web("#1a1a1a"));
+        double wl=8, wt=4.5, wfx=hw-9;
+        gc.fillRoundRect( wfx-wl/2,  hh-wt/2, wl, wt, 2, 2);
+        gc.fillRoundRect( wfx-wl/2, -hh-wt/2, wl, wt, 2, 2);
+        gc.fillRoundRect(-wfx-wl/2,  hh-wt/2, wl, wt, 2, 2);
+        gc.fillRoundRect(-wfx-wl/2, -hh-wt/2, wl, wt, 2, 2);
+        // White body
+        gc.setFill(Color.web("#ecf0f1")); gc.fillRoundRect(-hw, -hh, hw*2, hh*2, 6, 6);
+        // Red stripe along side
+        gc.setFill(Color.web("#e74c3c")); gc.fillRect(-hw, hh*0.4, hw*2, hh*0.6);
+        // Red cross
+        gc.setFill(Color.web("#e74c3c"));
+        gc.fillRect(-hw/4-1.5, -hh+3, 3, hh*2-6);
+        gc.fillRect(-hw/4-6,   -1.5,  12, 3);
+        // Priority light bar on roof
+        long t2 = System.currentTimeMillis();
+        boolean blink = (t2 % 400) < 200;
+        gc.setFill(blink ? Color.RED : Color.BLUE);    gc.fillRect(-5, -hh-4, 5, 3);
+        gc.setFill(blink ? Color.BLUE : Color.RED);    gc.fillRect( 1, -hh-4, 5, 3);
+        // Windshield
+        gc.setFill(Color.web("#87ceeb", 0.6)); gc.fillRect(hw-9, -hh+2, 8, hh*2-4);
+        gc.setStroke(Color.web("#bdc3c7")); gc.setLineWidth(0.8); gc.strokeRoundRect(-hw,-hh,hw*2,hh*2,6,6);
+    }
+
+    private static void drawFireTruck(GraphicsContext gc, Vehicle v, double hw, double hh) {
+        gc.setFill(Color.web("#1a1a1a"));
+        double wl=9, wt=5, wfx=hw-10;
+        gc.fillRoundRect( wfx-wl/2,  hh-wt/2, wl, wt, 2, 2);
+        gc.fillRoundRect( wfx-wl/2, -hh-wt/2, wl, wt, 2, 2);
+        gc.fillRoundRect(-wfx-wl/2,  hh-wt/2, wl, wt, 2, 2);
+        gc.fillRoundRect(-wfx-wl/2, -hh-wt/2, wl, wt, 2, 2);
+        // Red body
+        gc.setFill(v.getColor()); gc.fillRoundRect(-hw, -hh, hw*2, hh*2, 5, 5);
+        // Yellow reflective strips
+        gc.setFill(Color.web("#f1c40f",0.85));
+        gc.fillRect(-hw, -hh*0.18, hw*2, hh*0.36);
+        // Silver ladder on roof
+        gc.setStroke(Color.web("#bdc3c7")); gc.setLineWidth(1.2);
+        gc.strokeLine(-hw+6, -hh*0.8, hw-8, -hh*0.8);
+        gc.strokeLine(-hw+6,  hh*0.8, hw-8,  hh*0.8);
+        for (double rx=-hw+8; rx<hw-10; rx+=8)
+            gc.strokeLine(rx, -hh*0.8, rx, hh*0.8);
+        // White side stripe
+        gc.setFill(Color.WHITE.deriveColor(0,1,1,0.35));
+        gc.fillRect(-hw+4, -hh+2, 5, hh*2-4);
+        // Windshield
+        gc.setFill(Color.web("#87ceeb",0.6)); gc.fillRect(hw-10, -hh+2, 9, hh*2-4);
+        gc.setStroke(v.getColor().darker().darker()); gc.setLineWidth(0.8);
+        gc.strokeRoundRect(-hw, -hh, hw*2, hh*2, 5, 5);
+    }
+
+    // =====================================================
     // Trả về nhãn ngắn gọn cho Basic Mode
     // =====================================================
     private static String getVehicleLabel(Vehicle v) {
-        if (v instanceof FireTruck)      return "Fire";
+        if (v instanceof FireTruck)        return "Fire";
         if (v instanceof EmergencyVehicle) return "Ambu";
-        if (v instanceof Bicycle)        return "Bike";
-        if (v instanceof Motorbike)      return "Moto";
+        if (v instanceof Bicycle)          return "Bike";
+        if (v instanceof Motorbike)        return "Moto";
         return "Car";
     }
 }
